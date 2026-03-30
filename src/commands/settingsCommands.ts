@@ -241,7 +241,13 @@ export class SettingsCommands {
     
     if (!selected) return;
     
-    await config.update('markFormat', selected.value, vscode.ConfigurationTarget.Global);
+    try {
+      await config.update('markFormat', selected.value, vscode.ConfigurationTarget.Global);
+    } catch (error) {
+      console.error('更新 markFormat 失败:', error);
+      vscode.window.showErrorMessage('更新标记格式失败，请检查配置文件');
+      return;
+    }
     
     if (selected.value === 'custom') {
       const currentTemplate = config.get<string>('customMarkTemplate', '// [AI-GEN] model={model} timestamp={timestamp}');
@@ -258,8 +264,15 @@ export class SettingsCommands {
       });
       
       if (template) {
-        await config.update('customMarkTemplate', template, vscode.ConfigurationTarget.Global);
-        vscode.window.showInformationMessage(`✅ 已设置自定义模板`);
+        try {
+          await config.update('customMarkTemplate', template, vscode.ConfigurationTarget.Global);
+          vscode.window.showInformationMessage(`✅ 已设置自定义模板`);
+        } catch (error) {
+          console.error('更新 customMarkTemplate 失败:', error);
+          vscode.window.showErrorMessage('更新自定义模板失败');
+          await config.update('markFormat', currentFormat, vscode.ConfigurationTarget.Global);
+          return;
+        }
       } else {
         await config.update('markFormat', currentFormat, vscode.ConfigurationTarget.Global);
         return;
@@ -271,13 +284,39 @@ export class SettingsCommands {
         { placeHolder: '块标记作者设置' }
       );
       
+      let author: string = '';
+      
       if (useCurrentUser === '使用当前 Git 用户') {
-        // 获取当前 Git 用户
-        const { getCurrentGitUser } = await import('../utils/git');
-        const user = await getCurrentGitUser();
-        const author = user.name.split('@')[0] || user.email.split('@')[0];
-        await config.update('blockMarkAuthor', author, vscode.ConfigurationTarget.Global);
-        vscode.window.showInformationMessage(`✅ 块标记将使用作者: ${author}`);
+        try {
+          const { getCurrentGitUser } = await import('../utils/git');
+          const user = await getCurrentGitUser();
+          // 提取邮箱前缀作为作者名
+          author = user.email.split('@')[0];
+          if (!author && user.name) {
+            author = user.name.toLowerCase().replace(/\s/g, '');
+          }
+        } catch (error) {
+          console.error('获取 Git 用户失败:', error);
+        }
+      } else if (useCurrentUser === '手动输入') {
+        const input = await vscode.window.showInputBox({
+          prompt: '请输入作者名称',
+          placeHolder: '例如: edentang_v',
+          value: ''
+        });
+        if (input) {
+          author = input;
+        }
+      }
+      
+      if (author) {
+        try {
+          await config.update('blockMarkAuthor', author, vscode.ConfigurationTarget.Global);
+          vscode.window.showInformationMessage(`✅ 块标记将使用作者: ${author}`);
+        } catch (error) {
+          console.error('更新 blockMarkAuthor 失败:', error);
+          vscode.window.showErrorMessage('更新作者配置失败');
+        }
       }
     }
     

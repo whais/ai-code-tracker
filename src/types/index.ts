@@ -133,4 +133,5 @@ export interface ParsedAIMark {
   timestamp?: Date;        // 时间戳
   rawText: string;         // 原始文本
   matchedPattern: string;  // 匹配的模式
+  description?: string;
 }

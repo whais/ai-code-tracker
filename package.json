@@ -17,40 +17,52 @@
     "commands": [
       {
         "command": "ai-code-tracker.showStats",
-        "title": "AI Code Tracker: 显示个人统计"
+        "title": "显示个人AI代码统计",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.showTeamStats",
-        "title": "AI Code Tracker: 显示团队统计"
+        "title": "显示团队AI代码统计",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.markAsAI",
-        "title": "标记选中代码为AI生成"
+        "title": "标记选中代码为AI生成",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.markAsHuman",
-        "title": "标记选中代码为人工编写"
+        "title": "标记选中代码为人工编写",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.analyzeGitBlame",
-        "title": "AI Code Tracker: 分析Git历史"
+        "title": "分析Git历史",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.generateWeeklyReport",
-        "title": "AI Code Tracker: 生成周报"
+        "title": "生成周报",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.autoReportSettings",
-        "title": "AI Code Tracker: 周报自动发送设置"
+        "title": "自动周报设置",
+        "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.smartPaste",
-        "title": "AI Code Tracker: 智能粘贴",
+        "title": "智能粘贴",
         "category": "AI Code Tracker"
       },
       {
         "command": "ai-code-tracker.configureAIMarks",
         "title": "配置 AI 标记模式",
+        "category": "AI Code Tracker"
+      },
+      {
+        "command": "ai-code-tracker.analyzeHistory",
+        "title": "分析历史 AI 代码率",
         "category": "AI Code Tracker"
       }
     ],
@@ -77,84 +89,106 @@
         "aiCodeTracker.enableGitIntegration": {
           "type": "boolean",
           "default": true,
-          "description": "启用Git集成，按人员统计"
+          "description": "启用 Git 集成，用于团队统计"
         },
         "aiCodeTracker.teamMembers": {
           "type": "object",
           "default": {},
-          "description": "团队成员Git邮箱映射",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "aiCodeTracker.aiModels": {
-          "type": "array",
-          "default": [
-            "deepseek",
-            "copilot",
-            "chatgpt",
-            "claude"
-          ],
-          "description": "AI模型关键词列表"
-        },
-        "aiCodeTracker.weeklyReport": {
-          "type": "object",
-          "default": {
-            "enabled": false,
-            "dayOfWeek": 5,
-            "hour": 17,
-            "minute": 0,
-            "outputPath": "ai-reports",
-            "format": "html",
-            "autoSend": false,
-            "emailRecipients": []
-          },
-          "description": "周报配置"
+          "description": "团队成员映射，格式: { \"email\": \"姓名\" }"
         },
         "aiCodeTracker.autoMarkAI": {
           "type": "boolean",
           "default": false,
-          "description": "自动标记 AI 生成的代码，无需确认"
-        },
-        "aiCodeTracker.detectAIPlugins": {
-          "type": "boolean",
-          "default": true,
-          "description": "检测来自 AI 插件（如 Claude Code、Copilot）的代码"
+          "description": "自动标记检测到的 AI 代码"
         },
         "aiCodeTracker.autoDetectThreshold": {
           "type": "number",
           "default": 3,
-          "description": "自动检测的代码行数阈值（插入超过此行数时触发检测）"
+          "description": "自动检测 AI 代码的阈值（连续代码行数）"
         },
-        "aiCodeTracker.aiMarkPatterns": {
-          "type": "array",
-          "default": [],
-          "description": "自定义 AI 标记模式",
-          "items": {
-            "type": "object",
-            "properties": {
-              "name": { "type": "string" },
-              "patterns": { "type": "array", "items": { "type": "string" } },
-              "description": { "type": "string" },
-              "enabled": { "type": "boolean" }
-            }
-          }
+        "aiCodeTracker.notifyOnTeamMemberAdd": {
+          "type": "boolean",
+          "default": true,
+          "description": "添加新团队成员时显示通知"
         },
         "aiCodeTracker.markFormat": {
           "type": "string",
-          "enum": ["comment", "tag", "custom"],
+          "enum": ["comment", "tag", "block", "custom"],
           "default": "comment",
-          "description": "AI 代码标记格式"
+          "description": "AI 代码标记格式: comment=注释格式, tag=标签格式, block=块标记格式, custom=自定义格式"
         },
-        "aiCodeTracker.customMarkTemplate": {
+        "aiCodeTracker.blockMarkAuthor": {
           "type": "string",
-          "default": "// [AI-GEN] model={model} timestamp={timestamp}",
-          "description": "自定义标记模板，支持 {model}, {timestamp}, {date} 变量"
+          "default": "",
+          "description": "块标记的默认作者（邮箱前缀），例如: edentang_v"
         },
         "aiCodeTracker.defaultModel": {
           "type": "string",
           "default": "ai",
           "description": "默认 AI 模型名称"
+        },
+        "aiCodeTracker.customMarkTemplate": {
+          "type": "string",
+          "default": "// [AI-GEN] model={model} timestamp={timestamp}",
+          "description": "自定义标记模板，支持变量: {model}, {timestamp}, {date}, {author}"
+        },
+        "aiCodeTracker.aiMarkPatterns": {
+          "type": "array",
+          "default": [],
+          "description": "自定义 AI 标记模式，用于匹配项目中已有的 AI 标记",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string", "description": "标记名称" },
+              "patterns": { "type": "array", "items": { "type": "string" }, "description": "正则表达式模式列表" },
+              "description": { "type": "string", "description": "描述" },
+              "enabled": { "type": "boolean", "default": true, "description": "是否启用" },
+              "extractAuthor": { "type": "boolean", "default": false, "description": "是否提取作者信息" },
+              "authorPattern": { "type": "string", "description": "作者提取正则表达式" },
+              "extractTool": { "type": "boolean", "default": false, "description": "是否提取工具名称" },
+              "toolPattern": { "type": "string", "description": "工具名称提取正则表达式" }
+            }
+          }
+        },
+        "aiCodeTracker.weeklyReport": {
+          "type": "object",
+          "default": {
+            "enabled": false,
+            "dayOfWeek": 4,
+            "hour": 17,
+            "minute": 0,
+            "format": "html",
+            "outputPath": "ai-reports",
+            "useGit": true,
+            "autoSend": false,
+            "emailRecipients": []
+          },
+          "description": "周报配置",
+          "properties": {
+            "enabled": { "type": "boolean", "description": "是否启用自动周报" },
+            "dayOfWeek": { "type": "number", "minimum": 0, "maximum": 6, "description": "生成日期 (0=周一, 6=周日)" },
+            "hour": { "type": "number", "minimum": 0, "maximum": 23, "description": "生成小时" },
+            "minute": { "type": "number", "minimum": 0, "maximum": 59, "description": "生成分钟" },
+            "format": { "type": "string", "enum": ["html", "markdown", "json"], "description": "报告格式" },
+            "outputPath": { "type": "string", "description": "输出目录" },
+            "useGit": { "type": "boolean", "description": "是否使用 Git 历史分析" },
+            "autoSend": { "type": "boolean", "description": "是否自动发送邮件" },
+            "emailRecipients": { "type": "array", "items": { "type": "string" }, "description": "邮件收件人" }
+          }
+        },
+        "aiCodeTracker.historyAnalysis": {
+          "type": "object",
+          "default": {
+            "maxCommits": 1000,
+            "includeMergeCommits": false,
+            "analyzeBranches": false
+          },
+          "description": "历史分析配置",
+          "properties": {
+            "maxCommits": { "type": "number", "default": 1000, "description": "最大分析提交数" },
+            "includeMergeCommits": { "type": "boolean", "default": false, "description": "是否包含合并提交" },
+            "analyzeBranches": { "type": "boolean", "default": false, "description": "是否分析所有分支" }
+          }
         }
       }
     }

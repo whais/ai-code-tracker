@@ -1,8 +1,82 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
 import { MarkPatternManager } from './markPatternManager';
 
 export class AIDetector {
   private static patternManager = MarkPatternManager.getInstance();
+
+  static hasHeaderAIMark(filePath: string): boolean {
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      
+      // 检查前30行
+      for (let i = 0; i < Math.min(30, lines.length); i++) {
+        const line = lines[i];
+        
+        // JSDoc 头部
+        if (line.trim().startsWith('/**') && this.patternManager.hasAIMark(line)) {
+          return true;
+        }
+        
+        // 单行头部
+        if (this.patternManager.hasAIMark(line) && 
+            (line.trim().startsWith('//') || line.trim().startsWith('#') || 
+            line.includes('<!--'))) {
+          return true;
+        }
+      }
+    } catch (error) {
+      console.error(`读取文件失败: ${filePath}`, error);
+    }
+    return false;
+  }
+
+  // 检测 JSON 文件是否有对应的 .generated 标记文件
+  static hasGeneratedMarkerFile(filePath: string): boolean {
+    const generatedFilePath = filePath + '.generated';
+    try {
+      if (fs.existsSync(generatedFilePath)) {
+        const content = fs.readFileSync(generatedFilePath, 'utf-8');
+        // 检查 .generated 文件是否包含 AI 标记
+        return this.patternManager.hasAIMark(content) || 
+               content.includes('@ai-generated') ||
+               content.includes('[AI-GEN]');
+      }
+    } catch (error) {
+      console.error(`读取 .generated 文件失败: ${generatedFilePath}`, error);
+    }
+    return false;
+  }
+
+  // 检测文件是否是 AI 生成的（包括 .generated 标记）
+  static isAIGeneratedFile(filePath: string): boolean {
+    // 检查 .generated 标记文件
+    if (this.hasGeneratedMarkerFile(filePath)) {
+      return true;
+    }
+    
+    // 检查头部标记
+    if (this.hasHeaderAIMark(filePath)) {
+      return true;
+    }
+    
+    // 检查文件内容的前20行
+    try {
+      const content = fs.readFileSync(filePath, 'utf-8');
+      const lines = content.split('\n');
+      
+      for (let i = 0; i < Math.min(20, lines.length); i++) {
+        if (this.patternManager.hasAIMark(lines[i])) {
+          return true;
+        }
+      }
+    } catch (error) {
+      console.error(`读取文件失败: ${filePath}`, error);
+    }
+    
+    return false;
+  }
 
   static detectSource(text: string): string | null {
     const result = this.patternManager.detectMark(text);
