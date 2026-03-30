@@ -1,0 +1,172 @@
+{
+  "name": "ai-code-tracker",
+  "displayName": "AI Code Tracker",
+  "description": "统计AI生成代码率，区分人工和AI代码，支持团队统计和自动周报",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "ai-code-tracker.showStats",
+        "title": "AI Code Tracker: 显示个人统计"
+      },
+      {
+        "command": "ai-code-tracker.showTeamStats",
+        "title": "AI Code Tracker: 显示团队统计"
+      },
+      {
+        "command": "ai-code-tracker.markAsAI",
+        "title": "标记选中代码为AI生成"
+      },
+      {
+        "command": "ai-code-tracker.markAsHuman",
+        "title": "标记选中代码为人工编写"
+      },
+      {
+        "command": "ai-code-tracker.analyzeGitBlame",
+        "title": "AI Code Tracker: 分析Git历史"
+      },
+      {
+        "command": "ai-code-tracker.generateWeeklyReport",
+        "title": "AI Code Tracker: 生成周报"
+      },
+      {
+        "command": "ai-code-tracker.autoReportSettings",
+        "title": "AI Code Tracker: 周报自动发送设置"
+      },
+      {
+        "command": "ai-code-tracker.smartPaste",
+        "title": "AI Code Tracker: 智能粘贴",
+        "category": "AI Code Tracker"
+      },
+      {
+        "command": "ai-code-tracker.configureAIMarks",
+        "title": "配置 AI 标记模式",
+        "category": "AI Code Tracker"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "ai-code-tracker.smartPaste",
+        "key": "ctrl+shift+v",
+        "mac": "cmd+shift+v",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "ai-code-tracker.smartPaste",
+          "group": "1_modification",
+          "when": "editorTextFocus"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Code Tracker",
+      "properties": {
+        "aiCodeTracker.enableGitIntegration": {
+          "type": "boolean",
+          "default": true,
+          "description": "启用Git集成，按人员统计"
+        },
+        "aiCodeTracker.teamMembers": {
+          "type": "object",
+          "default": {},
+          "description": "团队成员Git邮箱映射",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "aiCodeTracker.aiModels": {
+          "type": "array",
+          "default": [
+            "deepseek",
+            "copilot",
+            "chatgpt",
+            "claude"
+          ],
+          "description": "AI模型关键词列表"
+        },
+        "aiCodeTracker.weeklyReport": {
+          "type": "object",
+          "default": {
+            "enabled": false,
+            "dayOfWeek": 5,
+            "hour": 17,
+            "minute": 0,
+            "outputPath": "ai-reports",
+            "format": "html",
+            "autoSend": false,
+            "emailRecipients": []
+          },
+          "description": "周报配置"
+        },
+        "aiCodeTracker.autoMarkAI": {
+          "type": "boolean",
+          "default": false,
+          "description": "自动标记 AI 生成的代码，无需确认"
+        },
+        "aiCodeTracker.detectAIPlugins": {
+          "type": "boolean",
+          "default": true,
+          "description": "检测来自 AI 插件（如 Claude Code、Copilot）的代码"
+        },
+        "aiCodeTracker.autoDetectThreshold": {
+          "type": "number",
+          "default": 3,
+          "description": "自动检测的代码行数阈值（插入超过此行数时触发检测）"
+        },
+        "aiCodeTracker.aiMarkPatterns": {
+          "type": "array",
+          "default": [],
+          "description": "自定义 AI 标记模式",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "patterns": { "type": "array", "items": { "type": "string" } },
+              "description": { "type": "string" },
+              "enabled": { "type": "boolean" }
+            }
+          }
+        },
+        "aiCodeTracker.markFormat": {
+          "type": "string",
+          "enum": ["comment", "tag", "custom"],
+          "default": "comment",
+          "description": "AI 代码标记格式"
+        },
+        "aiCodeTracker.customMarkTemplate": {
+          "type": "string",
+          "default": "// [AI-GEN] model={model} timestamp={timestamp}",
+          "description": "自定义标记模板，支持 {model}, {timestamp}, {date} 变量"
+        },
+        "aiCodeTracker.defaultModel": {
+          "type": "string",
+          "default": "ai",
+          "description": "默认 AI 模型名称"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.0.0"
+  }
+}
