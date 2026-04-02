@@ -19,29 +19,36 @@ export class UIMessageFormatter {
    */
   static formatPersonalStats(member: MemberStats): string {
     const aiPercentage = member.aiPercentage.toFixed(1);
+
+    // 获取工作区根路径
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
     
     const filesList = Array.from(member.files.values())
       .slice(0, 10)
       .map(file => {
         const fileAI = file.totalLines > 0 ? (file.aiLines / file.totalLines * 100).toFixed(1) : 0;
-        const fileName = file.filePath.split('/').pop() || file.filePath;
-        return `  📄 ${fileName}: ${fileAI}% AI (${file.aiLines}/${file.totalLines}行)`;
+        // 计算相对路径
+        let displayPath = file.filePath;
+        if (workspaceRoot && file.filePath.startsWith(workspaceRoot)) {
+          displayPath = file.filePath.substring(workspaceRoot.length + 1);
+        }
+        return `  📄 ${displayPath}: ${fileAI}% AI (${file.aiLines}/${file.totalLines}行)`;
       })
       .join('\n');
-    
+      
     return `📊 ${member.name} 的AI代码统计
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-总代码行数: ${member.totalLines} 行
-🤖 AI生成: ${member.aiLines} 行 (${aiPercentage}%)
-👤 人工编写: ${member.humanLines} 行
-✏️ 修改的AI代码: ${member.modifiedAILines} 行
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎯 AI代码率: ${aiPercentage}%
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      总代码行数: ${member.totalLines} 行
+      🤖 AI生成: ${member.aiLines} 行 (${aiPercentage}%)
+      👤 人工编写: ${member.humanLines} 行
+      ✏️ 修改的AI代码: ${member.modifiedAILines} 行
+      ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+      🎯 AI代码率: ${aiPercentage}%
 
-📁 文件详情 (前10个):
-${filesList || '  暂无文件数据'}
+      📁 文件详情 (前10个):
+      ${filesList || '  暂无文件数据'}
 
-${this.generateProgressBar(member.aiPercentage)} ${aiPercentage}%`;
+      ${this.generateProgressBar(member.aiPercentage)} ${aiPercentage}%`;
   }
 
   /**

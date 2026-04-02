@@ -13,6 +13,7 @@ const execAsync = promisify(exec);
 export interface WeeklyReport {
   weekStart: Date;
   weekEnd: Date;
+  projectName: string;
   summary: ReportSummary;
   teamStats: TeamReportStats[];
   trends: TrendData[];
@@ -96,6 +97,15 @@ export class ReportGenerator {
     }
   }
   
+  // 获取项目名称
+  private getProjectName(): string {
+    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+      const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+      return path.basename(workspacePath);
+    }
+    return '未命名项目';
+  }
+
   // 生成周报（基于Git历史）
   async generateWeeklyReportFromGit(weekStart?: Date): Promise<WeeklyReport> {
     const now = new Date();
@@ -114,6 +124,7 @@ export class ReportGenerator {
     const report: WeeklyReport = {
       weekStart: start,
       weekEnd: end,
+      projectName: this.getProjectName(),
       summary: this.calculateSummary(weeklyData),
       teamStats: this.calculateTeamStats(weeklyData, lastWeekData),
       trends: this.calculateTrends(weeklyData),
@@ -170,6 +181,7 @@ export class ReportGenerator {
     const report: WeeklyReport = {
       weekStart: start,
       weekEnd: end,
+      projectName: this.getProjectName(),
       summary: this.calculateSummary(weeklyData),
       teamStats: this.calculateTeamStats(weeklyData, lastWeekData),
       trends: this.calculateTrends(weeklyData),

@@ -38,13 +38,18 @@ export class MarkCommands {
     
     if (!markStyle) return;
     
-    let model = await vscode.window.showInputBox({
-      prompt: '请输入AI模型名称',
-      placeHolder: 'deepseek-v3, copilot, chatgpt...',
-      value: 'deepseek-v3'
-    });
-    
-    if (!model) return;
+    // 块标记不需要设置 model，使用作者作为标识
+    let model = '';
+    if (markStyle.value !== 'block') {
+      const modelInput = await vscode.window.showInputBox({
+        prompt: '请输入AI模型名称',
+        placeHolder: 'deepseek-v3, copilot, chatgpt...',
+        value: 'deepseek-v3'
+      });
+      
+      if (!modelInput) return;
+      model = modelInput;
+    }
     
     const patternManager = MarkPatternManager.getInstance();
     
@@ -88,22 +93,28 @@ export class MarkCommands {
     let markText = '';
     
     if (markStyle.value === 'block') {
-      // 块标记格式
-      const startMark = patternManager.generateAIMark(editor.document.languageId, model, {
-        format: 'block',
-        author: author,
-        date: new Date(),
-        description: description || undefined
-      });
-      const endMark = patternManager.generateEndMark(editor.document.languageId);
+      // 块标记格式：分别生成开始和结束标记
+      const commentSyntax = AIDetector.getCommentSyntax(editor.document.languageId);
+      const formattedDate = new Date().toISOString().split('T')[0];
+      const desc = description || '';
+      
+      const startMark = `${commentSyntax} @ai-generated-start by ${author} ${formattedDate}${desc ? ' ' + desc : ''}`;
+      const endMark = `${commentSyntax} @ai-generated-end`;
+      
+      // 获取选中代码第一行的缩进
+      const firstLineText = editor.document.lineAt(selection.start.line).text;
+      const indentMatch = firstLineText.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
       
       await editor.edit(editBuilder => {
-        editBuilder.insert(new vscode.Position(selection.start.line, 0), startMark + '\n');
-        const endLine = selection.end.line + 1;
-        editBuilder.insert(new vscode.Position(endLine, 0), endMark + '\n');
+        // 在选中代码开始前插入开始标记（保持相同缩进）
+        editBuilder.insert(new vscode.Position(selection.start.line, 0), indent + startMark + '\n');
+        // 在选中代码结束后插入结束标记（保持相同缩进）
+        const endLineText = editor.document.lineAt(selection.end.line).text;
+        editBuilder.insert(new vscode.Position(selection.end.line, endLineText.length), '\n' + indent + endMark);
       });
       
-      vscode.window.showInformationMessage(`✅ 已标记代码块为AI生成 (${model})`);
+      vscode.window.showInformationMessage(`✅ 已标记代码块为AI生成 (by ${author})`);
       await this.gitAnalyzer.analyzeFile(editor.document.fileName);
       return;
     }
@@ -123,9 +134,13 @@ export class MarkCommands {
         editBuilder.insert(firstLine, markText + '\n\n');
       });
     } else {
-      // 行内注释：插入到选中行上方
+      // 行内注释：插入到选中行上方（保持相同缩进）
+      const firstLineText = editor.document.lineAt(selection.start.line).text;
+      const indentMatch = firstLineText.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
+      
       await editor.edit(editBuilder => {
-        editBuilder.insert(new vscode.Position(selection.start.line, 0), markText + '\n');
+        editBuilder.insert(new vscode.Position(selection.start.line, 0), indent + markText + '\n');
       });
     }
     
@@ -146,20 +161,66 @@ export class MarkCommands {
       return;
     }
     
-    const author = await vscode.window.showInputBox({
-      prompt: '请输入作者名称',
-      placeHolder: 'your-name'
+    // 询问标记风格
+    const markStyle = await vscode.window.showQuickPick([
+      { label: '行内标记', description: '在选中代码上方添加单行人工标记', value: 'inline' },
+      { label: '块级标记', description: '用 @human-start / @human-end 包裹代码块', value: 'block' },
+    ], { placeHolder: '选择人工代码标记风格' });
+    
+    if (!markStyle) return;
+    
+    // 自动获取 Git 作者名
+    let author: string = '';
+    const { getCurrentGitUser } = await import('../utils/git');
+    const user = await getCurrentGitUser();
+    author = user.email.split('@')[0] || user.name.split(' ')[0] || 'unknown';
+    
+    // 询问描述（可选）
+    let description = await vscode.window.showInputBox({
+      prompt: '输入修改说明（可选）',
+      placeHolder: '例如: 修复登录bug'
     });
     
-    const markComment = AIDetector.getCommentSyntax(editor.document.languageId);
-    const humanMark = `${markComment} [HUMAN] author=${author || 'unknown'} timestamp=${new Date().toISOString()}\n`;
+    const commentSyntax = AIDetector.getCommentSyntax(editor.document.languageId);
+    const formattedDate = new Date().toISOString().split('T')[0];
     
-    await editor.edit(editBuilder => {
-      editBuilder.insert(new vscode.Position(selection.start.line, 0), humanMark);
-    });
+    if (markStyle.value === 'block') {
+      // 块级标记格式
+      const desc = description || '';
+      const startMark = `${commentSyntax} @human-start by ${author} ${formattedDate}${desc ? ' ' + desc : ''}`;
+      const endMark = `${commentSyntax} @human-end`;
+      
+      // 获取选中代码第一行的缩进
+      const firstLineText = editor.document.lineAt(selection.start.line).text;
+      const indentMatch = firstLineText.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
+      
+      await editor.edit(editBuilder => {
+        // 在选中代码开始前插入开始标记（保持相同缩进）
+        editBuilder.insert(new vscode.Position(selection.start.line, 0), indent + startMark + '\n');
+        // 在选中代码结束后插入结束标记（保持相同缩进）
+        const endLineText = editor.document.lineAt(selection.end.line).text;
+        editBuilder.insert(new vscode.Position(selection.end.line, endLineText.length), '\n' + indent + endMark);
+      });
+      
+      vscode.window.showInformationMessage(`✅ 已标记代码块为人工编写 (by ${author})`);
+    } else {
+      // 行内标记格式（保持相同缩进）
+      const firstLineText = editor.document.lineAt(selection.start.line).text;
+      const indentMatch = firstLineText.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
+      
+      const desc = description ? ` ${description}` : '';
+      const humanMark = `${commentSyntax} @human-written by ${author} ${formattedDate}${desc}`;
+      
+      await editor.edit(editBuilder => {
+        editBuilder.insert(new vscode.Position(selection.start.line, 0), indent + humanMark + '\n');
+      });
+      
+      vscode.window.showInformationMessage(`✅ 已标记为人工编写代码 (by ${author})`);
+    }
     
     await this.gitAnalyzer.analyzeFile(editor.document.fileName);
-    vscode.window.showInformationMessage('✅ 已标记为人工编写代码');
   }
 
   async analyzeGitHistory(): Promise<void> {

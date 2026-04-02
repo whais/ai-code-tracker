@@ -45,6 +45,7 @@ export class ReportFormatter {
   static toHTML(report: WeeklyReport): string {
     const weekStartStr = this.formatDate(report.weekStart);
     const weekEndStr = this.formatDate(report.weekEnd);
+    const projectName = report.projectName || '未命名项目';
     
     const teamTableRows = report.teamStats.map(member => this.generateTeamTableRow(member)).join('');
     const trendsChart = this.generateTrendsChart(report.trends);
@@ -55,7 +56,7 @@ export class ReportFormatter {
     <head>
       <meta charset="UTF-8">
       <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>AI代码使用周报 - ${weekStartStr} 至 ${weekEndStr}</title>
+      <title>${projectName} - AI代码使用周报 - ${weekStartStr} 至 ${weekEndStr}</title>
       <style>
         ${this.getHTMLStyles()}
       </style>
@@ -63,7 +64,7 @@ export class ReportFormatter {
     <body>
       <div class="container">
         <div class="header">
-          <h1>🤖 AI代码使用周报</h1>
+          <h1>🤖 ${projectName} - AI代码使用周报</h1>
           <div class="date">${weekStartStr} - ${weekEndStr}</div>
         </div>
         
@@ -118,8 +119,9 @@ export class ReportFormatter {
   static toMarkdown(report: WeeklyReport): string {
     const weekStartStr = this.formatDate(report.weekStart);
     const weekEndStr = this.formatDate(report.weekEnd);
+    const projectName = report.projectName || '未命名项目';
     
-    let markdown = `# 🤖 AI代码使用周报\n\n`;
+    let markdown = `# 🤖 ${projectName} - AI代码使用周报\n\n`;
     markdown += `**周期**: ${weekStartStr} - ${weekEndStr}\n\n`;
     markdown += `---\n\n`;
     

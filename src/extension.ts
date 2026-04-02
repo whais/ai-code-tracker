@@ -101,12 +101,58 @@ async function addAIMark(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document !== document) return;
   
-  // 使用 MarkPatternManager 生成标记
   const patternManager = MarkPatternManager.getInstance();
-  const aiMark = patternManager.generateAIMark(document.languageId, source);
+  const lines = document.getText().split('\n');
+  
+  // 判断是新增文件还是修改现有文件
+  // 新增文件：文件总行数较少（< 100）且大部分内容都是新添加的
+  const isNewFile = lines.length <= endLine - startLine + 5 && startLine <= 5;
   
   await editor.edit(editBuilder => {
-    editBuilder.insert(new vscode.Position(startLine, 0), aiMark + '\n');
+    if (isNewFile) {
+      // 新增文件：在文件头部添加 JSDoc 头部标记
+      const relativePath = vscode.workspace.asRelativePath(document.fileName);
+      const headerMark = patternManager.generateAIMark(document.languageId, source, {
+        format: 'header',
+        author: source,
+        date: new Date(),
+        description: relativePath
+      });
+      editBuilder.insert(new vscode.Position(0, 0), headerMark + '\n\n');
+    } else if (startLine === endLine) {
+      // 单行修改：在行内添加行内标记
+      const lineText = lines[startLine];
+      const inlineMark = patternManager.generateAIMark(document.languageId, source, {
+        format: 'inline',
+        date: new Date()
+      });
+      
+      // 找到行尾位置，在代码后面添加注释
+      const lineEndPosition = new vscode.Position(startLine, lineText.length);
+      editBuilder.insert(lineEndPosition, ' ' + inlineMark);
+    } else {
+      // 多行修改：在代码段开头和结尾添加块级标记
+      const blockMark = patternManager.generateAIMark(document.languageId, source, {
+        format: 'block',
+        author: source,
+        date: new Date()
+      });
+      
+      // 块标记格式包含开始和结束标记，用换行分隔
+      const [startMark, endMark] = blockMark.split('\n\n');
+      
+      // 获取第一行代码的缩进
+      const firstLineText = lines[startLine];
+      const indentMatch = firstLineText.match(/^(\s*)/);
+      const indent = indentMatch ? indentMatch[1] : '';
+      
+      // 在代码段开始前插入开始标记（保持相同缩进）
+      editBuilder.insert(new vscode.Position(startLine, 0), indent + startMark + '\n');
+      
+      // 在代码段结束后插入结束标记（保持相同缩进）
+      const lastLineText = lines[endLine];
+      editBuilder.insert(new vscode.Position(endLine, lastLineText.length), '\n' + indent + endMark);
+    }
   });
   
   await gitAnalyzer.analyzeFile(document.fileName);

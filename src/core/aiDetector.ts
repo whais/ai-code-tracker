@@ -86,9 +86,11 @@ export class AIDetector {
     return null;
   }
 
-  static hasAIMark(document: vscode.TextDocument, startLine: number, endLine: number): boolean {
+  static hasAIMark(document: vscode.TextDocument, startLine: number, endLine?: number): boolean {
     const checkStart = Math.max(0, startLine - 5);
-    for (let i = checkStart; i <= startLine; i++) {
+    const checkEnd = endLine !== undefined ? endLine : startLine;
+    const lineCount = document.lineCount;
+    for (let i = checkStart; i <= Math.min(checkEnd, lineCount - 1); i++) {
       const line = document.lineAt(i).text;
       if (this.patternManager.hasAIMark(line)) {
         return true;
@@ -97,9 +99,11 @@ export class AIDetector {
     return false;
   }
 
-  static hasHumanMark(document: vscode.TextDocument, startLine: number, endLine: number): boolean {
+  static hasHumanMark(document: vscode.TextDocument, startLine: number, endLine?: number): boolean {
     const checkStart = Math.max(0, startLine - 5);
-    for (let i = checkStart; i <= startLine; i++) {
+    const checkEnd = endLine !== undefined ? endLine : startLine;
+    const lineCount = document.lineCount;
+    for (let i = checkStart; i <= Math.min(checkEnd, lineCount - 1); i++) {
       const line = document.lineAt(i).text;
       if (this.patternManager.hasHumanMark(line)) {
         return true;
@@ -128,6 +132,117 @@ export class AIDetector {
     ];
     
     return patterns.some(pattern => pattern.test(line));
+  }
+
+  /**
+   * 启发式检测大模型插件生成的代码
+   * 基于代码特征、体积和上下文判断是否是 AI 生成的代码
+   */
+  static detectAIGeneratedCode(text: string, languageId: string): { isAI: boolean; confidence: number; reason: string } {
+    const lines = text.split('\n');
+    const totalLines = lines.length;
+    
+    // 1. 检查是否包含已有的 AI 标记
+    if (this.patternManager.hasAIMark(text)) {
+      return { isAI: false, confidence: 0, reason: 'already_marked' };
+    }
+    
+    // 2. 计算代码特征分数
+    let codeLineCount = 0;
+    let importLineCount = 0;
+    let functionCount = 0;
+    let classCount = 0;
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed === '') continue;
+      
+      // 代码行
+      if (this.detectCodeLine(line)) {
+        codeLineCount++;
+      }
+      
+      // import/require 行
+      if (/^import\s+|^require\s*\(/.test(trimmed)) {
+        importLineCount++;
+      }
+      
+      // 函数定义
+      if (/^(export\s+)?(async\s+)?function\s+\w+/.test(trimmed) ||
+          /^(export\s+)?const\s+\w+\s*=\s*(async\s*)?\(/.test(trimmed) ||
+          /^(export\s+)?async\s+\w+\(/.test(trimmed)) {
+        functionCount++;
+      }
+      
+      // 类定义
+      if (/^(export\s+)?class\s+\w+/.test(trimmed)) {
+        classCount++;
+      }
+    }
+    
+    // 3. 计算置信度
+    let confidence = 0;
+    const reasons: string[] = [];
+    
+    // 大量代码（超过 10 行有效代码）
+    if (codeLineCount >= 10) {
+      confidence += 30;
+      reasons.push('large_code_block');
+    }
+    
+    // 包含完整函数定义
+    if (functionCount >= 1) {
+      confidence += 25;
+      reasons.push('has_function');
+    }
+    
+    // 包含类定义
+    if (classCount >= 1) {
+      confidence += 20;
+      reasons.push('has_class');
+    }
+    
+    // 包含 import 语句（可能是新增文件或模块）
+    if (importLineCount >= 1) {
+      confidence += 15;
+      reasons.push('has_imports');
+    }
+    
+    // 代码结构完整（有代码行但注释比例适中）
+    const codeRatio = totalLines > 0 ? codeLineCount / totalLines : 0;
+    if (codeRatio > 0.3 && codeRatio < 0.9) {
+      confidence += 10;
+      reasons.push('good_structure');
+    }
+    
+    // 4. 特殊模式检测（大模型常见代码模式）
+    const aiPatterns = [
+      /\/\/\s*@ts-ignore|@ts-expect-error/,  // TypeScript 忽略注释
+      /console\.log\s*\(\s*['"`][\w\s]+['"`]\s*\)/,  // 调试日志
+      /throw\s+new\s+(Error|TypeError|ReferenceError)/,  // 错误抛出
+      /try\s*{\s*$/,  // try 块开始
+      /catch\s*\(\s*\w+\s*\)/,  // catch 块
+    ];
+    
+    for (const pattern of aiPatterns) {
+      if (pattern.test(text)) {
+        confidence += 5;
+        reasons.push('ai_pattern');
+        break;
+      }
+    }
+    
+    // 5. 根据文件类型调整阈值
+    const highConfidenceLanguages = ['typescript', 'javascript', 'python', 'java', 'go', 'rust'];
+    if (highConfidenceLanguages.includes(languageId)) {
+      confidence += 10;
+    }
+    
+    return {
+      isAI: confidence >= 50,
+      confidence,
+      reason: reasons.join(',')
+    };
   }
 
   static getCommentSyntax(languageId: string): string {
@@ -205,7 +320,19 @@ export class AIDetector {
       }
     }
     
-    return blocks;
+    // 使用启发式检测过滤，只返回高置信度的 AI 代码块
+    const filteredBlocks: Array<{startLine: number, endLine: number}> = [];
+    for (const block of blocks) {
+      const blockText = lines.slice(block.startLine, block.endLine + 1).join('\n');
+      const detection = this.detectAIGeneratedCode(blockText, 'typescript'); // 使用通用类型
+      
+      // 只保留置信度 >= 40 的代码块
+      if (detection.confidence >= 40) {
+        filteredBlocks.push(block);
+      }
+    }
+    
+    return filteredBlocks;
   }
 
   static generateAIMark(languageId: string, model: string): string {

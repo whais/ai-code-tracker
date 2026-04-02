@@ -177,6 +177,8 @@ export class GitAnalyzer {
 
   /**
    * 判断一行是否为代码行（非注释、非空行）
+   * 注意：这个方法现在仅用于启发式检测未标记的代码块
+   * 在 AI 区域内，所有行（包括注释和空行）都算作 AI 代码
    */
   private isCodeLine(line: string): boolean {
     const trimmed = line.trim();
@@ -215,24 +217,26 @@ export class GitAnalyzer {
       console.log(`[JSON] ${filePath}: 检测到 .generated 标记，标记所有行为 AI`);
     }
     
-    // ============ 2. 如果已有标记，直接跳过区域检测 ============
+    // ============ 2. 区域检测与标记 ============
     if (aiLinesSet.size === 0) {
       // 区域栈管理
       const regionStack: Region[] = [];
       
       // 2.1 检测文件级头部标记（多行注释）
       const headerRegion = this.detectMultilineHeader(lines, patternManager);
+      
+      // 标志位：是否存在文件级 AI 头部标记
+      const hasFileLevelAIMark = headerRegion?.type === 'ai';
+      
       if (headerRegion) {
-        // 头部注释，从注释结束后到文件末尾都是该类型区域
-        const regionStart = headerRegion.endLine + 1;
-        if (regionStart < lines.length) {
-          regionStack.push({
-            type: headerRegion.type,
-            startLine: regionStart,
-            endLine: -1  // -1 表示到文件结束
-          });
-          console.log(`[HEADER] ${filePath}: 检测到 ${headerRegion.type.toUpperCase()} 头部注释 (行 ${headerRegion.startLine}-${headerRegion.endLine})，区域从行 ${regionStart} 开始`);
-        }
+        // 头部注释，将整个文件（从第0行开始）都标记为该类型区域
+        // 因为头部注释本身也是 AI 生成的，应该算作 AI 代码
+        regionStack.push({
+          type: headerRegion.type,
+          startLine: 0,  // 从文件开头开始
+          endLine: -1  // -1 表示到文件结束
+        });
+        console.log(`[HEADER] ${filePath}: 检测到 ${headerRegion.type.toUpperCase()} 头部注释 (行 ${headerRegion.startLine}-${headerRegion.endLine})，整个文件标记为 ${headerRegion.type.toUpperCase()}`);
       }
       
       // 2.2 逐行扫描，处理块级标记
@@ -242,17 +246,22 @@ export class GitAnalyzer {
         // 检查 AI 块级开始标记
         const aiStartMark = patternManager.isStartMark(line);
         if (aiStartMark) {
-          // 推入新区域
-          regionStack.push({
-            type: 'ai',
-            startLine: i + 1,  // 标记从下一行开始生效
-            endLine: -1
-          });
-          console.log(`[BLOCK-START] ${filePath}: AI 区域开始于行 ${i}，从行 ${i + 1} 生效`);
+          // 如果存在文件级 AI 头部标记，忽略 AI 块级标记（只做修改记录，不做区域统计）
+          if (hasFileLevelAIMark) {
+            console.log(`[BLOCK-START] ${filePath}: 检测到 AI 块开始标记，但文件已有 AI 头部注释，忽略此标记（行 ${i}）`);
+          } else {
+            // 推入新区域
+            regionStack.push({
+              type: 'ai',
+              startLine: i + 1,  // 标记从下一行开始生效
+              endLine: -1
+            });
+            console.log(`[BLOCK-START] ${filePath}: AI 区域开始于行 ${i}，从行 ${i + 1} 生效`);
+          }
           continue;
         }
         
-        // 检查 Human 块级开始标记
+        // 检查 Human 块级开始标记（始终处理，不受文件级 AI 标记影响）
         if (patternManager.isHumanStartMark(line)) {
           regionStack.push({
             type: 'human',
@@ -263,12 +272,15 @@ export class GitAnalyzer {
           continue;
         }
         
-        // 检查结束标记（AI 或 Human）
+        // 检查结束标记
         const isAIEnd = patternManager.isEndMark(line);
         const isHumanEnd = patternManager.isHumanEndMark(line);
         
         if (isAIEnd || isHumanEnd) {
-          if (regionStack.length > 0) {
+          // 如果存在文件级 AI 头部标记且当前是 AI 结束标记，忽略它
+          if (hasFileLevelAIMark && isAIEnd) {
+            console.log(`[BLOCK-END] ${filePath}: 检测到 AI 块结束标记，但文件已有 AI 头部注释，忽略此标记（行 ${i}）`);
+          } else if (regionStack.length > 0) {
             const closedRegion = regionStack.pop()!;
             closedRegion.endLine = i - 1;  // 结束标记本身不计入区域
             console.log(`[BLOCK-END] ${filePath}: ${closedRegion.type.toUpperCase()} 区域结束于行 ${i}，实际代码行 ${closedRegion.startLine}-${closedRegion.endLine}`);
@@ -282,19 +294,18 @@ export class GitAnalyzer {
           
           // 检查当前行是否在区域内
           if (i >= currentRegion.startLine && (currentRegion.endLine === -1 || i <= currentRegion.endLine)) {
-            // 在区域内，只有代码行才计入
-            if (this.isCodeLine(line)) {
-              if (currentRegion.type === 'ai') {
-                aiLinesSet.add(i);
-              }
-              // human 区域不添加任何标记（即不算 AI）
+            // 在 AI 区域内，所有行（包括代码、注释、空行）都算作 AI 代码
+            // 在 Human 区域内，所有行都算作 Human 代码（即不算 AI）
+            if (currentRegion.type === 'ai') {
+              aiLinesSet.add(i);
             }
+            // human 区域不添加任何标记（即不算 AI）
           }
         }
       }
       
       // 2.3 输出区域统计
-      console.log(`[REGIONS] ${filePath}: 共处理 ${regionStack.length} 个区域，AI 代码行数: ${aiLinesSet.size}`);
+      console.log(`[REGIONS] ${filePath}: 文件级AI标记=${hasFileLevelAIMark}, 未闭合区域=${regionStack.length}, AI 代码行数: ${aiLinesSet.size}`);
       if (aiLinesSet.size > 0 && aiLinesSet.size < 20) {
         console.log(`[REGIONS] AI 代码行: ${Array.from(aiLinesSet).sort((a, b) => a - b).join(', ')}`);
       }

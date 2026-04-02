@@ -64,13 +64,21 @@ export class WebviewManager {
       { enableScripts: true }
     );
     
+    // 获取工作区根路径，用于计算相对路径
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath || '';
+    
     const filesList = Array.from(member.files.values())
       .slice(0, 20)
       .map(file => {
         const fileAI = file.totalLines > 0 ? (file.aiLines / file.totalLines * 100).toFixed(1) : 0;
+        // 计算相对路径
+        let displayPath = file.filePath;
+        if (workspaceRoot && file.filePath.startsWith(workspaceRoot)) {
+          displayPath = file.filePath.substring(workspaceRoot.length + 1);
+        }
         return `
-          <div class="file-item">
-            <span class="file-name">📄 ${this.escapeHtml(path.basename(file.filePath))}</span>
+          <div class="file-item" onclick="vscode.postMessage({ command: 'openFile', path: '${this.escapeHtml(file.filePath)}' })">
+            <span class="file-name">📄 ${this.escapeHtml(displayPath)}</span>
             <div class="file-stats">
               <div class="progress-container">
                 <div class="progress-fill" style="width: ${fileAI}%"></div>
@@ -95,12 +103,19 @@ export class WebviewManager {
         .progress-container { position: relative; width: 100%; background: #3e3e42; border-radius: 10px; overflow: hidden; height: 30px; }
         .progress-fill { background: linear-gradient(90deg, #4ec9b0, #2ecc71); height: 100%; }
         .progress-text { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: 0.85em; color: #333; }
-        .file-item { background: #2d2d30; padding: 12px; border-radius: 8px; margin-bottom: 10px; }
-        .file-name { font-weight: bold; display: block; margin-bottom: 8px; }
+        .file-item { background: #2d2d30; padding: 12px; border-radius: 8px; margin-bottom: 10px; cursor: pointer; transition: background 0.2s; }
+        .file-item:hover { background: #3e3e42; }
+        .file-name { font-weight: bold; display: block; margin-bottom: 8px; font-size: 0.9em; color: #4ec9b0; word-break: break-all; }
         .file-stats { display: flex; align-items: center; gap: 15px; }
         .file-stats .progress-container { flex: 1; }
         .file-lines { color: #888; font-size: 0.9em; }
       </style>
+      <script>
+        const vscode = acquireVsCodeApi();
+        function openFile(path) {
+          vscode.postMessage({ command: 'openFile', path: path });
+        }
+      </script>
     </head>
     <body>
       <div class="header">
@@ -112,10 +127,24 @@ export class WebviewManager {
         <div class="stat-card"><div class="stat-value">${member.aiLines}</div><div class="stat-label">AI生成代码</div></div>
         <div class="stat-card"><div class="stat-value">${member.aiPercentage.toFixed(1)}%</div><div class="stat-label">AI使用率</div></div>
       </div>
-      <h3>📁 文件详情</h3>
+      <h3>📁 文件详情（点击文件可打开）</h3>
       ${filesList}
     </body>
     </html>`;
+    
+    // 处理 webview 消息
+    panel.webview.onDidReceiveMessage(
+      message => {
+        switch (message.command) {
+          case 'openFile':
+            const uri = vscode.Uri.file(message.path);
+            vscode.window.showTextDocument(uri);
+            break;
+        }
+      },
+      undefined,
+      []
+    );
   }
 
   private static escapeHtml(text: string): string {

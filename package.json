@@ -80,6 +80,16 @@
           "command": "ai-code-tracker.smartPaste",
           "group": "1_modification",
           "when": "editorTextFocus"
+        },
+        {
+          "command": "ai-code-tracker.markAsAI",
+          "group": "9_cutcopypaste@5",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "ai-code-tracker.markAsHuman",
+          "group": "9_cutcopypaste@6",
+          "when": "editorHasSelection"
         }
       ]
     },
