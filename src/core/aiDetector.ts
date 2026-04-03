@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { MarkPatternManager } from './markPatternManager';
+import { getCommentSyntax } from '../utils/helpers';
 
 export class AIDetector {
   private static patternManager = MarkPatternManager.getInstance();
@@ -142,6 +143,10 @@ export class AIDetector {
     const lines = text.split('\n');
     const totalLines = lines.length;
     
+    // 从配置读取阈值，默认 50
+    const config = vscode.workspace.getConfiguration('aiCodeTracker');
+    const threshold = config.get('heuristicThreshold', 50);
+    
     // 1. 检查是否包含已有的 AI 标记
     if (this.patternManager.hasAIMark(text)) {
       return { isAI: false, confidence: 0, reason: 'already_marked' };
@@ -239,32 +244,14 @@ export class AIDetector {
     }
     
     return {
-      isAI: confidence >= 50,
+      isAI: confidence >= threshold,
       confidence,
       reason: reasons.join(',')
     };
   }
 
   static getCommentSyntax(languageId: string): string {
-    const syntax: Record<string, string> = {
-      'javascript': '//',
-      'typescript': '//',
-      'python': '#',
-      'java': '//',
-      'c': '//',
-      'cpp': '//',
-      'go': '//',
-      'rust': '//',
-      'ruby': '#',
-      'php': '//',
-      'html': '<!--',
-      'css': '/*',
-      'json': '//',
-      'vue': '<!--',
-      'jsx': '//',
-      'tsx': '//'
-    };
-    return syntax[languageId] || '//';
+    return getCommentSyntax(languageId);
   }
 
   static findUnmarkedAICode(lines: string[]): Array<{startLine: number, endLine: number}> {

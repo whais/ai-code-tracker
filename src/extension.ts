@@ -12,6 +12,8 @@ import { registerCommands } from './commands';
 import { initTeamConfig } from './utils/git';
 import { AIDetector } from './core/aiDetector';
 import { MarkPatternManager } from './core/markPatternManager';
+import { logger, LogLevel } from './utils/logger';
+import { storage } from './utils/storage';
 
 let statsManager: TeamStatsManager;
 let gitAnalyzer: GitAnalyzer;
@@ -24,7 +26,20 @@ let reportCommands: ReportCommands;
 let settingsCommands: SettingsCommands;
 
 export async function activate(context: vscode.ExtensionContext) {
-  console.log('AI Code Tracker 已激活');
+  // 初始化存储管理器
+  storage.initialize(context);
+  
+  // 初始化日志系统
+  const config = vscode.workspace.getConfiguration('aiCodeTracker');
+  const logLevel = config.get<string>('logLevel', 'info');
+  const logLevelMap: Record<string, LogLevel> = {
+    'debug': LogLevel.DEBUG,
+    'info': LogLevel.INFO,
+    'warn': LogLevel.WARN,
+    'error': LogLevel.ERROR
+  };
+  logger.setLogLevel(logLevelMap[logLevel] ?? LogLevel.INFO);
+  logger.info('AI Code Tracker 已激活');
   
   // 初始化 MarkPatternManager（单例，会自动加载配置）
   const patternManager = MarkPatternManager.getInstance();
@@ -42,6 +57,8 @@ export async function activate(context: vscode.ExtensionContext) {
   
   // 初始化核心组件
   statsManager = new TeamStatsManager();
+  statsManager.loadFromStorage(); // 从持久化存储加载数据
+  
   gitAnalyzer = new GitAnalyzer(statsManager.getStats(), () => {
     statusBarManager?.update();
   });
@@ -77,8 +94,7 @@ export async function activate(context: vscode.ExtensionContext) {
   
   context.subscriptions.push(textChangeDisposable, saveDisposable);
   
-  // 加载历史数据
-  loadHistoricalData(context);
+  // 历史数据加载由 reportGenerator 处理
   
   // 初始化团队配置
   await initTeamConfig();
@@ -86,8 +102,21 @@ export async function activate(context: vscode.ExtensionContext) {
   // 分析当前工作区
   await gitAnalyzer.analyzeWorkspace();
   
+  // 保存统计数据到持久化存储
+  await storage.saveTeamStats(statsManager.getStats());
+  
   // 更新状态栏
   await statusBarManager.update();
+  
+  // 定期保存统计数据（每 5 分钟）
+  const saveInterval = setInterval(async () => {
+    await storage.saveTeamStats(statsManager.getStats());
+  }, 5 * 60 * 1000);
+  
+  // 注册清理函数
+  context.subscriptions.push({
+    dispose: () => clearInterval(saveInterval)
+  });
   
   vscode.window.showInformationMessage('✅ AI Code Tracker 已启动，使用 Cmd+Shift+V 进行智能粘贴');
 }
@@ -105,8 +134,15 @@ async function addAIMark(
   const lines = document.getText().split('\n');
   
   // 判断是新增文件还是修改现有文件
-  // 新增文件：文件总行数较少（< 100）且大部分内容都是新添加的
-  const isNewFile = lines.length <= endLine - startLine + 5 && startLine <= 5;
+  // 新增文件判断条件：
+  // 1. 文件总行数 <= 100（小文件）
+  // 2. 新增内容占文件总行数的 80% 以上
+  // 3. 从文件前 5 行开始添加
+  const totalLines = lines.length;
+  const addedLines = endLine - startLine + 1;
+  const isNewFile = totalLines <= 100 && 
+                    startLine <= 5 && 
+                    addedLines >= totalLines * 0.8;
   
   await editor.edit(editBuilder => {
     if (isNewFile) {
@@ -156,11 +192,6 @@ async function addAIMark(
   });
   
   await gitAnalyzer.analyzeFile(document.fileName);
-}
-
-function loadHistoricalData(context: vscode.ExtensionContext) {
-  const stored = context.globalState.get('aiReportHistory', []);
-  // reportHistory = new Map(stored);
 }
 
 export function deactivate() {

@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 import { TeamStats, MemberStats } from '../types';
+import { storage } from '../utils/storage';
 
 export class TeamStatsManager {
   private stats: TeamStats;
   private listeners: (() => void)[] = [];
+  private storageInitialized = false;
 
   constructor() {
+    // 延迟初始化：等 storage 初始化后再加载数据
     this.stats = {
       totalLines: 0,
       aiLines: 0,
@@ -13,6 +16,28 @@ export class TeamStatsManager {
       modifiedAILines: 0,
       members: new Map()
     };
+  }
+
+  /**
+   * 从持久化存储加载数据
+   * 应在 storage 初始化后调用
+   */
+  loadFromStorage(): void {
+    if (this.storageInitialized) {
+      return;
+    }
+    
+    try {
+      const savedStats = storage.loadTeamStats();
+      if (savedStats) {
+        this.stats = savedStats;
+        console.log('[TeamStatsManager] 已从存储加载统计数据');
+      }
+    } catch (error) {
+      console.log('[TeamStatsManager] 从存储加载数据失败:', error);
+    }
+    
+    this.storageInitialized = true;
   }
 
   getStats(): TeamStats {

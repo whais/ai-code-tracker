@@ -1,13 +1,26 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { TeamStats, MemberStats, FileStats } from '../types';
 import { MarkPatternManager } from './markPatternManager';
 import { AIDetector } from './aiDetector';
+import { LRUCache } from '../utils/lruCache';
+import { getWorkspaceFolderForFile, getWorkspaceFolders, forEachWorkspace } from '../utils/workspace';
+import { storage } from '../utils/storage';
 
 const execAsync = promisify(exec);
+
+// Git blame 缓存键类型
+interface BlameCacheKey {
+  filePath: string;
+  mtime: number; // 文件修改时间，用于判断缓存是否有效
+}
+
+// Git blame 缓存值类型
+type BlameCacheValue = Map<number, { email: string; name: string }>;
 
 // 区域类型定义
 interface Region {
@@ -19,44 +32,119 @@ interface Region {
 export class GitAnalyzer {
   private teamStats: TeamStats;
   private onStatsUpdate: () => void;
+  private blameCache: LRUCache<string, BlameCacheValue>; // 使用文件路径作为缓存键
 
   constructor(teamStats: TeamStats, onUpdate: () => void) {
     this.teamStats = teamStats;
     this.onStatsUpdate = onUpdate;
+    // 初始化缓存：最大 200 个文件，5 分钟过期
+    this.blameCache = new LRUCache<string, BlameCacheValue>(200, 5 * 60 * 1000);
+  }
+
+  /**
+   * 生成缓存键（包含文件路径和修改时间）
+   */
+  private generateCacheKey(filePath: string): string | null {
+    try {
+      const stats = fs.statSync(filePath);
+      return `${filePath}:${stats.mtime.getTime()}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 清空缓存
+   */
+  clearCache(): void {
+    this.blameCache.clear();
+  }
+
+  /**
+   * 获取缓存统计信息
+   */
+  getCacheStats(): { size: number; maxSize: number; ttl: number } {
+    return this.blameCache.getStats();
   }
 
   async analyzeFile(filePath: string): Promise<void> {
-    if (!vscode.workspace.workspaceFolders) return;
+    // 获取文件对应的工作区
+    const workspaceFolder = getWorkspaceFolderForFile(filePath);
+    if (!workspaceFolder) {
+      console.log(`[GitAnalyzer] 文件不在任何工作区中: ${filePath}`);
+      return;
+    }
     
-    const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
+    const workspacePath = workspaceFolder.uri.fsPath;
     const relativePath = path.relative(workspacePath, filePath);
     
     if (!fs.existsSync(filePath)) return;
     
     try {
+      // 先检查是否是 Git 仓库
+      await execAsync('git rev-parse --git-dir', { cwd: workspacePath });
+    } catch {
+      // 不是 Git 仓库，静默返回，避免重复提示
+      return;
+    }
+    
+    // 检查缓存
+    const cacheKey = this.generateCacheKey(filePath);
+    if (cacheKey) {
+      const cachedAuthors = this.blameCache.get(cacheKey);
+      if (cachedAuthors) {
+        console.log(`[Cache] 使用缓存的 blame 数据: ${filePath}`);
+        await this.updateStatsFromBlame(filePath, cachedAuthors);
+        this.onStatsUpdate();
+        return;
+      }
+    }
+    
+    try {
       const { stdout } = await execAsync(
-        `git blame --line-porcelain "${relativePath}" 2>/dev/null || true`,
+        `git blame --line-porcelain "${relativePath}"`,
         { cwd: workspacePath }
       );
       
       if (stdout) {
         const authors = this.parseBlame(stdout);
-        this.updateStatsFromBlame(filePath, authors);
+        
+        // 存入缓存
+        if (cacheKey) {
+          this.blameCache.set(cacheKey, authors);
+          console.log(`[Cache] 缓存 blame 数据: ${filePath}`);
+        }
+        
+        await this.updateStatsFromBlame(filePath, authors);
         this.onStatsUpdate();
+        
+        // 保存分析时间到持久化存储
+        await storage.saveLastAnalyzed(filePath);
       }
     } catch (error) {
-      console.log(`无法分析 ${filePath}`);
+      // 只在文件不是 Git 跟踪的文件时记录日志，其他错误静默处理
+      const errorMsg = String(error);
+      if (!errorMsg.includes('no such path') && !errorMsg.includes('Not a git repository')) {
+        console.log(`无法分析 ${filePath}: ${errorMsg}`);
+      }
     }
   }
 
   async analyzeWorkspace(): Promise<void> {
-    if (!vscode.workspace.workspaceFolders) return;
+    const folders = getWorkspaceFolders();
+    if (folders.length === 0) return;
     
-    const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-    const files = await this.findCodeFiles(workspacePath);
-    
-    for (const file of files) {
-      await this.analyzeFile(file);
+    // 分析所有工作区
+    for (const folder of folders) {
+      const workspacePath = folder.uri.fsPath;
+      console.log(`[GitAnalyzer] 分析工作区: ${folder.name} (${workspacePath})`);
+      
+      const files = await this.findCodeFiles(workspacePath);
+      console.log(`[GitAnalyzer] 找到 ${files.length} 个文件待分析`);
+      
+      for (const file of files) {
+        await this.analyzeFile(file);
+      }
     }
   }
 
@@ -194,14 +282,28 @@ export class GitAnalyzer {
     return true;
   }
 
-  private updateStatsFromBlame(filePath: string, authors: Map<number, { email: string; name: string }>) {
+  private async updateStatsFromBlame(filePath: string, authors: Map<number, { email: string; name: string }>): Promise<void> {
     const config = vscode.workspace.getConfiguration('aiCodeTracker');
     const teamMembers = config.get('teamMembers') as Record<string, string> || {};
     const patternManager = MarkPatternManager.getInstance();
     
-    if (!fs.existsSync(filePath)) return;
+    // 检查文件大小，大于 1MB 的文件跳过分析以避免性能问题
+    try {
+      const stats = await fsp.stat(filePath);
+      if (stats.size > 1024 * 1024) {
+        console.log(`[SKIP] ${filePath}: 文件过大 (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+        return;
+      }
+    } catch {
+      return;
+    }
     
-    const content = fs.readFileSync(filePath, 'utf-8');
+    let content: string;
+    try {
+      content = await fsp.readFile(filePath, 'utf-8');
+    } catch {
+      return;
+    }
     const lines = content.split('\n');
     
     // 存储每行是否属于 AI 代码
@@ -210,6 +312,12 @@ export class GitAnalyzer {
     // ============ 1. JSON 文件特殊处理 ============
     const isJsonFile = filePath.endsWith('.json');
     if (isJsonFile && AIDetector.hasGeneratedMarkerFile(filePath)) {
+      // 验证 JSON 格式是否合法（仅记录日志，不影响标记）
+      try {
+        JSON.parse(content);
+      } catch (e) {
+        console.log(`[JSON] ${filePath}: 文件格式可能不合法，但仍标记为 AI 生成`);
+      }
       // 标记所有行为 AI
       for (let i = 0; i < lines.length; i++) {
         aiLinesSet.add(i);
@@ -380,11 +488,17 @@ export class GitAnalyzer {
     }
   }
 
-  private async findCodeFiles(dir: string): Promise<string[]> {
+  private async findCodeFiles(dir: string, maxDepth: number = 10): Promise<string[]> {
     const files: string[] = [];
     const extensions = ['.ts', '.js', '.py', '.java', '.go', '.rs', '.cpp', '.c', '.jsx', '.tsx', '.vue'];
     
-    async function walk(currentDir: string) {
+    async function walk(currentDir: string, depth: number) {
+      // 限制遍历深度
+      if (depth > maxDepth) {
+        console.log(`[findCodeFiles] 达到最大遍历深度 ${maxDepth}，跳过: ${currentDir}`);
+        return;
+      }
+      
       try {
         const entries = fs.readdirSync(currentDir);
         
@@ -399,7 +513,7 @@ export class GitAnalyzer {
           
           if (stat.isDirectory()) {
             if (!['node_modules', '.git', 'dist', 'build', 'out', '.vscode'].includes(entry)) {
-              await walk(fullPath);
+              await walk(fullPath, depth + 1);
             }
           } else if (extensions.includes(path.extname(entry))) {
             files.push(fullPath);
@@ -410,7 +524,7 @@ export class GitAnalyzer {
       }
     }
     
-    await walk(dir);
+    await walk(dir, 0);
     return files;
   }
 }

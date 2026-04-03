@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { TeamStatsManager } from '../core/teamStats';
 import { MemberStats } from '../types';
+import { getWorkspaceFolders } from '../utils/workspace';
 
 const execAsync = promisify(exec);
 
@@ -99,11 +100,18 @@ export class ReportGenerator {
   
   // 获取项目名称
   private getProjectName(): string {
-    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-      const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
-      return path.basename(workspacePath);
+    const folders = getWorkspaceFolders();
+    if (folders.length === 0) {
+      return '未命名项目';
     }
-    return '未命名项目';
+    
+    if (folders.length === 1) {
+      return path.basename(folders[0].uri.fsPath);
+    }
+    
+    // 多工作区时返回组合名称
+    const names = folders.map(f => path.basename(f.uri.fsPath));
+    return `${names[0]} 等 ${folders.length} 个工作区`;
   }
 
   // 生成周报（基于Git历史）
@@ -217,76 +225,82 @@ export class ReportGenerator {
   
   // 收集Git数据
   private async collectGitData(start: Date, end: Date): Promise<any> {
-    if (!vscode.workspace.workspaceFolders) {
+    const folders = getWorkspaceFolders();
+    if (folders.length === 0) {
       throw new Error('没有打开的工作区');
     }
     
-    const workspacePath = vscode.workspace.workspaceFolders[0].uri.fsPath;
     const startStr = start.toISOString().split('T')[0];
     const endStr = end.toISOString().split('T')[0];
     
-    try {
-      // 获取本周所有提交
-      const { stdout: gitLog } = await execAsync(
-        `git log --since="${startStr}" --until="${endStr}" --pretty=format:"%H|%an|%ae|%ad" --date=short`,
-        { cwd: workspacePath }
-      );
+    // 合并多个工作区的统计数据
+    const weeklyStats = {
+      totalLines: 0,
+      aiLines: 0,
+      humanLines: 0,
+      modifiedAILines: 0,
+      authors: new Map<string, any>(),
+      files: new Map<string, any>(),
+      dailyData: new Map<string, any>()
+    };
+    
+    // 遍历所有工作区收集数据
+    for (const folder of folders) {
+      const workspacePath = folder.uri.fsPath;
       
-      const commits = gitLog.split('\n').filter(l => l.trim()).map(line => {
-        const [hash, name, email, date] = line.split('|');
-        return { hash, name, email, date };
-      });
-      
-      const weeklyStats = {
-        totalLines: 0,
-        aiLines: 0,
-        humanLines: 0,
-        modifiedAILines: 0,
-        authors: new Map<string, any>(),
-        files: new Map<string, any>(),
-        dailyData: new Map<string, any>()
-      };
-      
-      for (const commit of commits) {
-        const stats = await this.getCommitStats(commit.hash, workspacePath);
+      try {
+        // 获取本周所有提交
+        const { stdout: gitLog } = await execAsync(
+          `git log --since="${startStr}" --until="${endStr}" --pretty=format:"%H|%an|%ae|%ad" --date=short`,
+          { cwd: workspacePath }
+        );
         
-        // 更新作者统计
-        let author = weeklyStats.authors.get(commit.email);
-        if (!author) {
-          author = {
-            name: commit.name,
-            email: commit.email,
-            totalLines: 0,
-            aiLines: 0,
-            humanLines: 0,
-            modifiedAILines: 0
-          };
-          weeklyStats.authors.set(commit.email, author);
+        const commits = gitLog.split('\n').filter(l => l.trim()).map(line => {
+          const [hash, name, email, date] = line.split('|');
+          return { hash, name, email, date };
+        });
+        
+        for (const commit of commits) {
+          const stats = await this.getCommitStats(commit.hash, workspacePath);
+          
+          // 更新作者统计
+          let author = weeklyStats.authors.get(commit.email);
+          if (!author) {
+            author = {
+              name: commit.name,
+              email: commit.email,
+              totalLines: 0,
+              aiLines: 0,
+              humanLines: 0,
+              modifiedAILines: 0
+            };
+            weeklyStats.authors.set(commit.email, author);
+          }
+          
+          author.totalLines += stats.totalLines;
+          author.aiLines += stats.aiLines;
+          author.humanLines += stats.humanLines;
+          
+          weeklyStats.totalLines += stats.totalLines;
+          weeklyStats.aiLines += stats.aiLines;
+          weeklyStats.humanLines += stats.humanLines;
+          
+          // 更新每日数据
+          let dayData = weeklyStats.dailyData.get(commit.date);
+          if (!dayData) {
+            dayData = { date: commit.date, totalLines: 0, aiLines: 0 };
+            weeklyStats.dailyData.set(commit.date, dayData);
+          }
+          dayData.totalLines += stats.totalLines;
+          dayData.aiLines += stats.aiLines;
         }
-        
-        author.totalLines += stats.totalLines;
-        author.aiLines += stats.aiLines;
-        author.humanLines += stats.humanLines;
-        
-        weeklyStats.totalLines += stats.totalLines;
-        weeklyStats.aiLines += stats.aiLines;
-        weeklyStats.humanLines += stats.humanLines;
-        
-        // 更新每日数据
-        let dayData = weeklyStats.dailyData.get(commit.date);
-        if (!dayData) {
-          dayData = { date: commit.date, totalLines: 0, aiLines: 0 };
-          weeklyStats.dailyData.set(commit.date, dayData);
-        }
-        dayData.totalLines += stats.totalLines;
-        dayData.aiLines += stats.aiLines;
+      } catch (error) {
+        console.error(`收集Git数据失败 (${folder.name}):`, error);
+        // 继续处理其他工作区
       }
-      
-      return weeklyStats;
-      
-    } catch (error) {
-      console.error('收集Git数据失败:', error);
-      return null;
+    }
+    
+    return weeklyStats.totalLines > 0 ? weeklyStats : null;
     }
   }
   
@@ -507,6 +521,7 @@ export class ReportGenerator {
   
   // 保存每周数据
   private saveWeeklyData(weekStart: Date, data: any): void {
+    if (!data) return; // 不保存空数据
     const key = weekStart.toISOString().split('T')[0];
     this.reportHistory.set(key, data);
     this.saveHistoricalData();

@@ -9,8 +9,17 @@ export class SaveListener {
     private onMarkCode: (document: vscode.TextDocument, startLine: number, endLine: number, source: string) => Promise<void>
   ) {}
 
+  // 文件大小限制：超过 100KB 的文件跳过检测
+  private readonly MAX_FILE_SIZE = 100 * 1024;
+
   async handleDocumentSave(document: vscode.TextDocument): Promise<void> {
+    // 检查文件大小，避免大文件性能问题
     const content = document.getText();
+    if (content.length > this.MAX_FILE_SIZE) {
+      console.log(`[SaveListener] ${document.fileName}: 文件过大 (${(content.length / 1024).toFixed(2)}KB)，跳过未标记代码检测`);
+      return;
+    }
+    
     const lines = content.split('\n');
     const unmarkedBlocks = AIDetector.findUnmarkedAICode(lines);
     

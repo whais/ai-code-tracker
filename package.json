@@ -116,6 +116,13 @@
           "default": 3,
           "description": "自动检测 AI 代码的阈值（连续代码行数）"
         },
+        "aiCodeTracker.heuristicThreshold": {
+          "type": "number",
+          "default": 50,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "启发式检测的置信度阈值（0-100）"
+        },
         "aiCodeTracker.notifyOnTeamMemberAdd": {
           "type": "boolean",
           "default": true,
@@ -123,7 +130,12 @@
         },
         "aiCodeTracker.markFormat": {
           "type": "string",
-          "enum": ["comment", "tag", "block", "custom"],
+          "enum": [
+            "comment",
+            "tag",
+            "block",
+            "custom"
+          ],
           "default": "comment",
           "description": "AI 代码标记格式: comment=注释格式, tag=标签格式, block=块标记格式, custom=自定义格式"
         },
@@ -149,14 +161,44 @@
           "items": {
             "type": "object",
             "properties": {
-              "name": { "type": "string", "description": "标记名称" },
-              "patterns": { "type": "array", "items": { "type": "string" }, "description": "正则表达式模式列表" },
-              "description": { "type": "string", "description": "描述" },
-              "enabled": { "type": "boolean", "default": true, "description": "是否启用" },
-              "extractAuthor": { "type": "boolean", "default": false, "description": "是否提取作者信息" },
-              "authorPattern": { "type": "string", "description": "作者提取正则表达式" },
-              "extractTool": { "type": "boolean", "default": false, "description": "是否提取工具名称" },
-              "toolPattern": { "type": "string", "description": "工具名称提取正则表达式" }
+              "name": {
+                "type": "string",
+                "description": "标记名称"
+              },
+              "patterns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "正则表达式模式列表"
+              },
+              "description": {
+                "type": "string",
+                "description": "描述"
+              },
+              "enabled": {
+                "type": "boolean",
+                "default": true,
+                "description": "是否启用"
+              },
+              "extractAuthor": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否提取作者信息"
+              },
+              "authorPattern": {
+                "type": "string",
+                "description": "作者提取正则表达式"
+              },
+              "extractTool": {
+                "type": "boolean",
+                "default": false,
+                "description": "是否提取工具名称"
+              },
+              "toolPattern": {
+                "type": "string",
+                "description": "工具名称提取正则表达式"
+              }
             }
           }
         },
@@ -175,15 +217,56 @@
           },
           "description": "周报配置",
           "properties": {
-            "enabled": { "type": "boolean", "description": "是否启用自动周报" },
-            "dayOfWeek": { "type": "number", "minimum": 0, "maximum": 6, "description": "生成日期 (0=周一, 6=周日)" },
-            "hour": { "type": "number", "minimum": 0, "maximum": 23, "description": "生成小时" },
-            "minute": { "type": "number", "minimum": 0, "maximum": 59, "description": "生成分钟" },
-            "format": { "type": "string", "enum": ["html", "markdown", "json"], "description": "报告格式" },
-            "outputPath": { "type": "string", "description": "输出目录" },
-            "useGit": { "type": "boolean", "description": "是否使用 Git 历史分析" },
-            "autoSend": { "type": "boolean", "description": "是否自动发送邮件" },
-            "emailRecipients": { "type": "array", "items": { "type": "string" }, "description": "邮件收件人" }
+            "enabled": {
+              "type": "boolean",
+              "description": "是否启用自动周报"
+            },
+            "dayOfWeek": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 6,
+              "description": "生成日期 (0=周一, 6=周日)"
+            },
+            "hour": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 23,
+              "description": "生成小时"
+            },
+            "minute": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 59,
+              "description": "生成分钟"
+            },
+            "format": {
+              "type": "string",
+              "enum": [
+                "html",
+                "markdown",
+                "json"
+              ],
+              "description": "报告格式"
+            },
+            "outputPath": {
+              "type": "string",
+              "description": "输出目录"
+            },
+            "useGit": {
+              "type": "boolean",
+              "description": "是否使用 Git 历史分析"
+            },
+            "autoSend": {
+              "type": "boolean",
+              "description": "是否自动发送邮件"
+            },
+            "emailRecipients": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "邮件收件人"
+            }
           }
         },
         "aiCodeTracker.historyAnalysis": {
@@ -195,10 +278,33 @@
           },
           "description": "历史分析配置",
           "properties": {
-            "maxCommits": { "type": "number", "default": 1000, "description": "最大分析提交数" },
-            "includeMergeCommits": { "type": "boolean", "default": false, "description": "是否包含合并提交" },
-            "analyzeBranches": { "type": "boolean", "default": false, "description": "是否分析所有分支" }
+            "maxCommits": {
+              "type": "number",
+              "default": 1000,
+              "description": "最大分析提交数"
+            },
+            "includeMergeCommits": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否包含合并提交"
+            },
+            "analyzeBranches": {
+              "type": "boolean",
+              "default": false,
+              "description": "是否分析所有分支"
+            }
           }
+        },
+        "aiCodeTracker.logLevel": {
+          "type": "string",
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ],
+          "default": "info",
+          "description": "日志级别: debug(调试), info(信息), warn(警告), error(错误)"
         }
       }
     }
@@ -211,6 +317,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.85.0",
+    "@types/mocha": "^10.0.0",
     "typescript": "^5.0.0"
   }
 }
