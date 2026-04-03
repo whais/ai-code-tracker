@@ -4,14 +4,18 @@ import * as fsp from 'fs/promises';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { TeamStats, MemberStats, FileStats } from '../types';
+import { TeamStats, MemberStats, FileStats, IntegratedFileStats } from '../types';
 import { MarkPatternManager } from './markPatternManager';
 import { AIDetector } from './aiDetector';
 import { LRUCache } from '../utils/lruCache';
 import { getWorkspaceFolderForFile, getWorkspaceFolders, forEachWorkspace } from '../utils/workspace';
 import { storage } from '../utils/storage';
+import { LineTracker, FileSourceStats } from './lineTracker';
 
 const execAsync = promisify(exec);
+
+// 数据来源类型
+export type DataSource = 'marks' | 'tracking' | 'blame' | 'integrated';
 
 // Git blame 缓存键类型
 interface BlameCacheKey {
@@ -33,12 +37,15 @@ export class GitAnalyzer {
   private teamStats: TeamStats;
   private onStatsUpdate: () => void;
   private blameCache: LRUCache<string, BlameCacheValue>; // 使用文件路径作为缓存键
+  private lineTracker: LineTracker;
 
   constructor(teamStats: TeamStats, onUpdate: () => void) {
     this.teamStats = teamStats;
     this.onStatsUpdate = onUpdate;
     // 初始化缓存：最大 200 个文件，5 分钟过期
     this.blameCache = new LRUCache<string, BlameCacheValue>(200, 5 * 60 * 1000);
+    // 获取 LineTracker 单例
+    this.lineTracker = LineTracker.getInstance();
   }
 
   /**
@@ -306,130 +313,100 @@ export class GitAnalyzer {
     }
     const lines = content.split('\n');
     
+    // ============ 1. 多源数据整合 ============
+    // 整合策略：
+    // 1. 文件标记 (marks) - 接入前已有标记，最高优先级
+    // 2. 实时追踪 (tracking) - 接入后无感统计
+    // 3. Git blame - 作为补充，主要用于作者归属
+    
+    const integratedStats: IntegratedFileStats = {
+      filePath,
+      totalLines: lines.length,
+      aiLines: 0,
+      humanLines: 0,
+      dataSource: 'integrated',
+      sourceBreakdown: {
+        fromMarks: 0,
+        fromTracking: 0,
+        fromBlame: 0
+      }
+    };
+    
     // 存储每行是否属于 AI 代码
     const aiLinesSet = new Set<number>();
+    // 记录每行的数据来源
+    const lineDataSource = new Map<number, DataSource>();
     
-    // ============ 1. JSON 文件特殊处理 ============
+    // ============ 1.1 首先分析文件标记 (接入前数据) ============
+    const marksResult = await this.analyzeFileMarks(filePath, lines, patternManager);
+    marksResult.aiLineNumbers.forEach(lineNum => {
+      aiLinesSet.add(lineNum);
+      lineDataSource.set(lineNum, 'marks');
+    });
+    integratedStats.sourceBreakdown.fromMarks = marksResult.aiLineNumbers.size;
+    
+    // ============ 1.2 然后整合 LineTracker 数据 (接入后数据) ============
+    // 注意：LineTracker 数据只补充文件标记未覆盖的行
+    const lineTrackerData = this.lineTracker.getFileStats(filePath);
+    if (lineTrackerData) {
+      // 遍历 LineTracker 中的每一行
+      const trackingMap = this.lineTracker.getFileLineMap(filePath);
+      if (trackingMap) {
+        Object.entries(trackingMap).forEach(([lineNumStr, lineInfo]) => {
+          const lineNum = parseInt(lineNumStr);
+          if (lineNum >= lines.length) return;
+          
+          // 如果该行已有文件标记，跳过（文件标记优先级更高）
+          if (lineDataSource.has(lineNum)) {
+            return;
+          }
+          
+          // 使用 LineTracker 的数据
+          if (lineInfo.source === 'ai') {
+            aiLinesSet.add(lineNum);
+            lineDataSource.set(lineNum, 'tracking');
+          } else if (lineInfo.source === 'human') {
+            // 明确标记为人工，不加入 aiLinesSet
+            lineDataSource.set(lineNum, 'tracking');
+          }
+          // unknown 不处理，留给 git blame 判断
+        });
+      }
+      integratedStats.sourceBreakdown.fromTracking = 
+        Array.from(lineDataSource.values()).filter(s => s === 'tracking').length;
+    }
+    
+    // ============ 1.3 JSON 文件特殊处理 ============
     const isJsonFile = filePath.endsWith('.json');
     if (isJsonFile && AIDetector.hasGeneratedMarkerFile(filePath)) {
-      // 验证 JSON 格式是否合法（仅记录日志，不影响标记）
-      try {
-        JSON.parse(content);
-      } catch (e) {
-        console.log(`[JSON] ${filePath}: 文件格式可能不合法，但仍标记为 AI 生成`);
-      }
-      // 标记所有行为 AI
       for (let i = 0; i < lines.length; i++) {
-        aiLinesSet.add(i);
-      }
-      console.log(`[JSON] ${filePath}: 检测到 .generated 标记，标记所有行为 AI`);
-    }
-    
-    // ============ 2. 区域检测与标记 ============
-    if (aiLinesSet.size === 0) {
-      // 区域栈管理
-      const regionStack: Region[] = [];
-      
-      // 2.1 检测文件级头部标记（多行注释）
-      const headerRegion = this.detectMultilineHeader(lines, patternManager);
-      
-      // 标志位：是否存在文件级 AI 头部标记
-      const hasFileLevelAIMark = headerRegion?.type === 'ai';
-      
-      if (headerRegion) {
-        // 头部注释，将整个文件（从第0行开始）都标记为该类型区域
-        // 因为头部注释本身也是 AI 生成的，应该算作 AI 代码
-        regionStack.push({
-          type: headerRegion.type,
-          startLine: 0,  // 从文件开头开始
-          endLine: -1  // -1 表示到文件结束
-        });
-        console.log(`[HEADER] ${filePath}: 检测到 ${headerRegion.type.toUpperCase()} 头部注释 (行 ${headerRegion.startLine}-${headerRegion.endLine})，整个文件标记为 ${headerRegion.type.toUpperCase()}`);
-      }
-      
-      // 2.2 逐行扫描，处理块级标记
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        
-        // 检查 AI 块级开始标记
-        const aiStartMark = patternManager.isStartMark(line);
-        if (aiStartMark) {
-          // 如果存在文件级 AI 头部标记，忽略 AI 块级标记（只做修改记录，不做区域统计）
-          if (hasFileLevelAIMark) {
-            console.log(`[BLOCK-START] ${filePath}: 检测到 AI 块开始标记，但文件已有 AI 头部注释，忽略此标记（行 ${i}）`);
-          } else {
-            // 推入新区域
-            regionStack.push({
-              type: 'ai',
-              startLine: i + 1,  // 标记从下一行开始生效
-              endLine: -1
-            });
-            console.log(`[BLOCK-START] ${filePath}: AI 区域开始于行 ${i}，从行 ${i + 1} 生效`);
-          }
-          continue;
+        if (!lineDataSource.has(i)) {
+          aiLinesSet.add(i);
+          lineDataSource.set(i, 'marks');
         }
-        
-        // 检查 Human 块级开始标记（始终处理，不受文件级 AI 标记影响）
-        if (patternManager.isHumanStartMark(line)) {
-          regionStack.push({
-            type: 'human',
-            startLine: i + 1,
-            endLine: -1
-          });
-          console.log(`[BLOCK-START] ${filePath}: HUMAN 区域开始于行 ${i}，从行 ${i + 1} 生效`);
-          continue;
-        }
-        
-        // 检查结束标记
-        const isAIEnd = patternManager.isEndMark(line);
-        const isHumanEnd = patternManager.isHumanEndMark(line);
-        
-        if (isAIEnd || isHumanEnd) {
-          // 如果存在文件级 AI 头部标记且当前是 AI 结束标记，忽略它
-          if (hasFileLevelAIMark && isAIEnd) {
-            console.log(`[BLOCK-END] ${filePath}: 检测到 AI 块结束标记，但文件已有 AI 头部注释，忽略此标记（行 ${i}）`);
-          } else if (regionStack.length > 0) {
-            const closedRegion = regionStack.pop()!;
-            closedRegion.endLine = i - 1;  // 结束标记本身不计入区域
-            console.log(`[BLOCK-END] ${filePath}: ${closedRegion.type.toUpperCase()} 区域结束于行 ${i}，实际代码行 ${closedRegion.startLine}-${closedRegion.endLine}`);
-          }
-          continue;
-        }
-        
-        // 判断当前行属于哪个区域
-        if (regionStack.length > 0) {
-          const currentRegion = regionStack[regionStack.length - 1];
-          
-          // 检查当前行是否在区域内
-          if (i >= currentRegion.startLine && (currentRegion.endLine === -1 || i <= currentRegion.endLine)) {
-            // 在 AI 区域内，所有行（包括代码、注释、空行）都算作 AI 代码
-            // 在 Human 区域内，所有行都算作 Human 代码（即不算 AI）
-            if (currentRegion.type === 'ai') {
-              aiLinesSet.add(i);
-            }
-            // human 区域不添加任何标记（即不算 AI）
-          }
-        }
-      }
-      
-      // 2.3 输出区域统计
-      console.log(`[REGIONS] ${filePath}: 文件级AI标记=${hasFileLevelAIMark}, 未闭合区域=${regionStack.length}, AI 代码行数: ${aiLinesSet.size}`);
-      if (aiLinesSet.size > 0 && aiLinesSet.size < 20) {
-        console.log(`[REGIONS] AI 代码行: ${Array.from(aiLinesSet).sort((a, b) => a - b).join(', ')}`);
       }
     }
     
-    // ============ 3. 更新统计信息 ============
+    // ============ 2. 更新统计信息（整合后的数据） ============
     for (const [lineNum, author] of authors) {
       const lineIndex = lineNum - 1;  // git blame 的行号从1开始，转换为0-based
       if (lineIndex >= lines.length) continue;
       
-      const isAI = aiLinesSet.has(lineIndex);
+      // 确定该行是否为 AI 代码
+      let isAI: boolean;
       
-      // 调试输出前10行
-      if (lineIndex < 10) {
-        const linePreview = lines[lineIndex].substring(0, 50);
-        console.log(`[LINE ${lineIndex}] isAI=${isAI}, content=${linePreview}`);
+      if (lineDataSource.has(lineIndex)) {
+        // 有明确的标记或追踪数据
+        isAI = aiLinesSet.has(lineIndex);
+      } else {
+        // 无明确数据源，尝试启发式检测（可选）
+        // 这里保守处理：未标记的认为是人工代码
+        isAI = false;
+        lineDataSource.set(lineIndex, 'blame');
+      }
+      
+      if (lineDataSource.get(lineIndex) === 'blame') {
+        integratedStats.sourceBreakdown.fromBlame++;
       }
       
       const email = author.email;
@@ -456,9 +433,11 @@ export class GitAnalyzer {
       if (isAI) {
         member.aiLines++;
         this.teamStats.aiLines++;
+        integratedStats.aiLines++;
       } else {
         member.humanLines++;
         this.teamStats.humanLines++;
+        integratedStats.humanLines++;
       }
       
       let fileStat = member.files.get(filePath);
@@ -486,6 +465,90 @@ export class GitAnalyzer {
     for (const member of this.teamStats.members.values()) {
       member.aiPercentage = member.totalLines > 0 ? (member.aiLines / member.totalLines * 100) : 0;
     }
+    
+    // 输出整合统计
+    console.log(`[INTEGRATED] ${filePath}: ` +
+      `AI=${integratedStats.aiLines}, Human=${integratedStats.humanLines}, ` +
+      `Sources={marks:${integratedStats.sourceBreakdown.fromMarks}, ` +
+      `tracking:${integratedStats.sourceBreakdown.fromTracking}, ` +
+      `blame:${integratedStats.sourceBreakdown.fromBlame}}`);
+  }
+
+  /**
+   * 分析文件中的AI标记
+   * 返回检测到的AI代码行号集合
+   */
+  private analyzeFileMarks(
+    filePath: string, 
+    lines: string[], 
+    patternManager: MarkPatternManager
+  ): { aiLineNumbers: Set<number> } {
+    const aiLineNumbers = new Set<number>();
+    const regionStack: Region[] = [];
+    
+    // 检测文件级头部标记
+    const headerRegion = this.detectMultilineHeader(lines, patternManager);
+    const hasFileLevelAIMark = headerRegion?.type === 'ai';
+    
+    if (headerRegion) {
+      regionStack.push({
+        type: headerRegion.type,
+        startLine: 0,
+        endLine: -1
+      });
+    }
+    
+    // 逐行扫描块级标记
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // AI 块开始
+      const aiStartMark = patternManager.isStartMark(line);
+      if (aiStartMark) {
+        if (!hasFileLevelAIMark) {
+          regionStack.push({
+            type: 'ai',
+            startLine: i + 1,
+            endLine: -1
+          });
+        }
+        continue;
+      }
+      
+      // Human 块开始
+      if (patternManager.isHumanStartMark(line)) {
+        regionStack.push({
+          type: 'human',
+          startLine: i + 1,
+          endLine: -1
+        });
+        continue;
+      }
+      
+      // 结束标记
+      const isAIEnd = patternManager.isEndMark(line);
+      const isHumanEnd = patternManager.isHumanEndMark(line);
+      
+      if (isAIEnd || isHumanEnd) {
+        if (!(hasFileLevelAIMark && isAIEnd) && regionStack.length > 0) {
+          regionStack.pop();
+        }
+        continue;
+      }
+      
+      // 判断当前行
+      if (regionStack.length > 0) {
+        const currentRegion = regionStack[regionStack.length - 1];
+        if (i >= currentRegion.startLine && 
+            (currentRegion.endLine === -1 || i <= currentRegion.endLine)) {
+          if (currentRegion.type === 'ai') {
+            aiLineNumbers.add(i);
+          }
+        }
+      }
+    }
+    
+    return { aiLineNumbers };
   }
 
   private async findCodeFiles(dir: string, maxDepth: number = 10): Promise<string[]> {

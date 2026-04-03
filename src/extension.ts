@@ -12,11 +12,13 @@ import { registerCommands } from './commands';
 import { initTeamConfig } from './utils/git';
 import { AIDetector } from './core/aiDetector';
 import { MarkPatternManager } from './core/markPatternManager';
+import { LineTracker } from './core/lineTracker';
 import { logger, LogLevel } from './utils/logger';
 import { storage } from './utils/storage';
 
 let statsManager: TeamStatsManager;
 let gitAnalyzer: GitAnalyzer;
+let lineTracker: LineTracker;
 let statusBarManager: StatusBarManager;
 let textChangeListener: TextChangeListener;
 let saveListener: SaveListener;
@@ -43,6 +45,10 @@ export async function activate(context: vscode.ExtensionContext) {
   
   // 初始化 MarkPatternManager（单例，会自动加载配置）
   const patternManager = MarkPatternManager.getInstance();
+  
+  // 初始化 LineTracker（单例）
+  lineTracker = LineTracker.getInstance();
+  lineTracker.initialize(context);
   
   // 监听配置变化
   const configChangeListener = vscode.workspace.onDidChangeConfiguration(event => {
@@ -76,11 +82,11 @@ export async function activate(context: vscode.ExtensionContext) {
   const commands = registerCommands(statsCommands, markCommands, reportCommands, settingsCommands);
   context.subscriptions.push(...commands);
   
-  // 初始化监听器
-  textChangeListener = new TextChangeListener(gitAnalyzer, async (source, document, startLine, endLine) => {
+  // 初始化监听器（传入 LineTracker 用于无感统计）
+  textChangeListener = new TextChangeListener(gitAnalyzer, lineTracker, async (source, document, startLine, endLine) => {
     await addAIMark(document, startLine, endLine, source);
   });
-  saveListener = new SaveListener(gitAnalyzer, async (document, startLine, endLine, source) => {
+  saveListener = new SaveListener(gitAnalyzer, lineTracker, async (document, startLine, endLine, source) => {
     await addAIMark(document, startLine, endLine, source);
   });
   
@@ -129,6 +135,9 @@ async function addAIMark(
 ): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document !== document) return;
+  
+  // 记录到 LineTracker（无感统计核心）
+  lineTracker.recordAIGeneration(document, startLine, endLine, source);
   
   const patternManager = MarkPatternManager.getInstance();
   const lines = document.getText().split('\n');

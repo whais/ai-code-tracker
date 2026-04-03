@@ -28,6 +28,31 @@ export interface FileStats {
   authorLines: Map<string, number>;
 }
 
+// 整合后的文件统计，包含数据来源信息
+export interface IntegratedFileStats {
+  filePath: string;
+  totalLines: number;
+  aiLines: number;
+  humanLines: number;
+  dataSource: 'marks' | 'tracking' | 'blame' | 'integrated';
+  sourceBreakdown: {
+    fromMarks: number;      // 来自文件已有标记的行数
+    fromTracking: number;   // 来自实时追踪的行数
+    fromBlame: number;      // 来自 git blame 启发式检测的行数
+  };
+}
+
+// 整合统计元数据
+export interface IntegrationMeta {
+  lastIntegrationTime: number;
+  totalFilesIntegrated: number;
+  dataSources: {
+    marks: number;
+    tracking: number;
+    blame: number;
+  };
+}
+
 export interface WeeklyReport {
   weekStart: Date;
   weekEnd: Date;

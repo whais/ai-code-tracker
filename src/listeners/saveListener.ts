@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { AIDetector } from '../core/aiDetector';
 import { GitAnalyzer } from '../core/gitAnalyzer';
+import { LineTracker } from '../core/lineTracker';
 
 // [AI-GEN] model=detected-ai timestamp=2026-03-30T02:19:31.067Z
 export class SaveListener {
   constructor(
     private gitAnalyzer: GitAnalyzer,
+    private lineTracker: LineTracker,
     private onMarkCode: (document: vscode.TextDocument, startLine: number, endLine: number, source: string) => Promise<void>
   ) {}
 
@@ -34,6 +36,9 @@ export class SaveListener {
     
     if (action === '标记所有') {
       for (const block of unmarkedBlocks) {
+        // 先记录到 LineTracker（无感统计）
+        this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
+        // 然后添加文件标记
         await this.onMarkCode(document, block.startLine, block.endLine, 'detected-ai');
       }
     } else if (action === '逐个查看') {
@@ -47,6 +52,9 @@ export class SaveListener {
         );
         
         if (mark === '标记') {
+          // 先记录到 LineTracker（无感统计）
+          this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
+          // 然后添加文件标记
           await this.onMarkCode(document, block.startLine, block.endLine, 'detected-ai');
         }
       }

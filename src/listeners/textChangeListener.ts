@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AIDetector } from '../core/aiDetector';
 import { GitAnalyzer } from '../core/gitAnalyzer';
+import { LineTracker } from '../core/lineTracker';
 import { PendingDetection } from '../types';
 
 export class TextChangeListener {
@@ -10,6 +11,7 @@ export class TextChangeListener {
 
   constructor(
     private gitAnalyzer: GitAnalyzer,
+    private lineTracker: LineTracker,
     private onAICodeDetected: (source: string, document: vscode.TextDocument, startLine: number, endLine: number) => Promise<void>
   ) {}
 
@@ -105,6 +107,10 @@ export class TextChangeListener {
         );
         
         if (action === '标记为 AI 代码' || action === '总是自动标记') {
+          // 先记录到 LineTracker（无感统计）
+          this.lineTracker.recordAIGeneration(document, startLine, endLine, aiSource);
+          
+          // 然后添加文件标记
           await this.onAICodeDetected(aiSource, document, startLine, endLine);
           vscode.window.showInformationMessage(`✅ 已标记为 AI 生成代码 (${aiSource})`);
           

@@ -10,7 +10,9 @@ import { TeamStats, MemberStats, FileStats } from '../types';
 export const StorageKeys = {
   TEAM_STATS: 'aiCodeTracker.teamStats',
   LAST_ANALYZED: 'aiCodeTracker.lastAnalyzed',
-  CACHE_METADATA: 'aiCodeTracker.cacheMetadata'
+  CACHE_METADATA: 'aiCodeTracker.cacheMetadata',
+  LINE_TRACKER_DATA: 'aiCodeTracker.lineTrackerData',
+  INTEGRATED_STATS_META: 'aiCodeTracker.integratedStatsMeta'
 } as const;
 
 // 序列化后的 MemberStats 类型（Map 转为普通对象）
@@ -253,11 +255,59 @@ export class StorageManager {
       key => this.context!.globalState.get(key) !== undefined
     ).length;
     
-    const workspaceKeys = [StorageKeys.LAST_ANALYZED, StorageKeys.CACHE_METADATA].filter(
+    const workspaceKeys = [StorageKeys.LAST_ANALYZED, StorageKeys.CACHE_METADATA, StorageKeys.LINE_TRACKER_DATA, StorageKeys.INTEGRATED_STATS_META].filter(
       key => this.context!.workspaceState.get(key) !== undefined
     ).length;
     
     return { globalKeys, workspaceKeys };
+  }
+
+  // ==================== LineTracker 数据存储 ====================
+
+  /**
+   * 保存 LineTracker 数据
+   */
+  async saveLineTrackerData(data: [string, any][]): Promise<void> {
+    this.checkInitialized();
+    await this.context!.workspaceState.update(StorageKeys.LINE_TRACKER_DATA, data);
+  }
+
+  /**
+   * 加载 LineTracker 数据
+   */
+  loadLineTrackerData(): [string, any][] | null {
+    this.checkInitialized();
+    return this.context!.workspaceState.get<[string, any][]>(StorageKeys.LINE_TRACKER_DATA, null);
+  }
+
+  // ==================== 整合统计元数据存储 ====================
+
+  /**
+   * 保存整合统计的元数据
+   */
+  async saveIntegratedStatsMeta(meta: {
+    lastIntegrationTime: number;
+    totalFilesIntegrated: number;
+    dataSources: { marks: number; tracking: number; blame: number };
+  }): Promise<void> {
+    this.checkInitialized();
+    await this.context!.workspaceState.update(StorageKeys.INTEGRATED_STATS_META, {
+      ...meta,
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * 加载整合统计的元数据
+   */
+  loadIntegratedStatsMeta(): {
+    lastIntegrationTime: number;
+    totalFilesIntegrated: number;
+    dataSources: { marks: number; tracking: number; blame: number };
+    timestamp: number;
+  } | null {
+    this.checkInitialized();
+    return this.context!.workspaceState.get(StorageKeys.INTEGRATED_STATS_META, null);
   }
 }
 
