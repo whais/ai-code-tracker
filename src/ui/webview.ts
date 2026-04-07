@@ -159,5 +159,3 @@ export class WebviewManager {
   }
 }
 
-// 导入 path 用于 basename
-import * as path from 'path';

@@ -37,7 +37,7 @@ export class SaveListener {
     if (action === '标记所有') {
       for (const block of unmarkedBlocks) {
         // 先记录到 LineTracker（无感统计）
-        this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
+        await this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
         // 然后添加文件标记
         await this.onMarkCode(document, block.startLine, block.endLine, 'detected-ai');
       }
@@ -53,7 +53,7 @@ export class SaveListener {
         
         if (mark === '标记') {
           // 先记录到 LineTracker（无感统计）
-          this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
+          await this.lineTracker.recordAIGeneration(document, block.startLine, block.endLine, 'detected-ai');
           // 然后添加文件标记
           await this.onMarkCode(document, block.startLine, block.endLine, 'detected-ai');
         }

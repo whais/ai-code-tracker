@@ -108,7 +108,7 @@ export class TextChangeListener {
         
         if (action === '标记为 AI 代码' || action === '总是自动标记') {
           // 先记录到 LineTracker（无感统计）
-          this.lineTracker.recordAIGeneration(document, startLine, endLine, aiSource);
+          await this.lineTracker.recordAIGeneration(document, startLine, endLine, aiSource);
           
           // 然后添加文件标记
           await this.onAICodeDetected(aiSource, document, startLine, endLine);

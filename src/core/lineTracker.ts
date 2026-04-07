@@ -13,6 +13,7 @@ export interface LineInfo {
   source: LineSource;
   status: LineStatus;
   aiModel?: string;
+  author?: string;           // 新增：作者邮箱
   originalContent: string;
   currentContent: string;
   createdAt: number;
@@ -67,14 +68,24 @@ export class LineTracker {
   /**
    * 记录AI生成的代码
    */
-  recordAIGeneration(
+  async recordAIGeneration(
     document: vscode.TextDocument,
     startLine: number,
     endLine: number,
     aiModel: string = 'unknown'
-  ): void {
+  ): Promise<void> {
     const filePath = document.fileName;
     const map = this.getOrCreateMap(filePath);
+
+    // 获取当前用户作为作者
+    let author = 'unknown';
+    try {
+      const { getCurrentGitUser } = await import('../utils/git');
+      const user = await getCurrentGitUser();
+      author = user.email;
+    } catch {
+      // 忽略获取失败
+    }
 
     for (let i = startLine; i <= endLine; i++) {
       const lineContent = document.lineAt(i).text;
@@ -82,6 +93,7 @@ export class LineTracker {
         source: 'ai',
         status: 'generated',
         aiModel,
+        author,                    // 记录作者
         originalContent: lineContent,
         currentContent: lineContent,
         createdAt: Date.now(),
@@ -93,16 +105,16 @@ export class LineTracker {
 
     // 异步持久化，不阻塞主流程
     this.persist().catch(err => console.error('[LineTracker] 持久化失败:', err));
-    console.log(`[LineTracker] 记录AI代码: ${filePath} [${startLine}-${endLine}]`);
+    console.log(`[LineTracker] 记录AI代码: ${filePath} [${startLine}-${endLine}] by ${author}`);
   }
 
   /**
    * 记录人工编辑
    */
-  recordHumanEdit(
+  async recordHumanEdit(
     document: vscode.TextDocument,
     change: vscode.TextDocumentContentChangeEvent
-  ): void {
+  ): Promise<void> {
     const filePath = document.fileName;
     const map = this.getOrCreateMap(filePath);
     const startLine = change.range.start.line;
@@ -132,6 +144,16 @@ export class LineTracker {
       this.adjustLineNumbers(filePath, originalEndLine, newEndLine - originalEndLine);
     }
 
+    // 获取当前用户作为作者（移到循环外部，只获取一次）
+    let author = 'unknown';
+    try {
+      const { getCurrentGitUser } = await import('../utils/git');
+      const user = await getCurrentGitUser();
+      author = user.email;
+    } catch {
+      // 忽略获取失败
+    }
+
     // 记录每一行
     newLines.forEach((content, index) => {
       const lineNum = startLine + index;
@@ -151,6 +173,7 @@ export class LineTracker {
         map[lineNum] = {
           source: 'human',
           status: 'original',
+          author,                    // 记录作者
           originalContent: content,
           currentContent: content,
           createdAt: Date.now(),
@@ -490,5 +513,100 @@ export class LineTracker {
       stats.set(filePath, this.calculateFileStats(filePath));
     }
     return stats;
+  }
+
+  /**
+   * 按用户聚合统计信息（用于团队统计文件）
+   * @returns Map<email, {aiLines, humanLines, totalLines}>
+   */
+  getStatsByUser(): Map<string, { 
+    name: string; 
+    aiLines: number; 
+    humanLines: number; 
+    totalLines: number;
+  }> {
+    const userStats = new Map<string, { 
+      name: string; 
+      aiLines: number; 
+      humanLines: number; 
+      totalLines: number;
+    }>();
+
+    for (const [filePath, lineMap] of this.fileMaps) {
+      for (const [lineNum, lineInfo] of Object.entries(lineMap)) {
+        // 跳过已删除的行
+        if (lineInfo.status === 'deleted') continue;
+
+        const email = lineInfo.author || 'unknown';
+        
+        if (!userStats.has(email)) {
+          userStats.set(email, {
+            name: lineInfo.author?.split('@')[0] || 'Unknown',
+            aiLines: 0,
+            humanLines: 0,
+            totalLines: 0
+          });
+        }
+
+        const stats = userStats.get(email)!;
+        stats.totalLines++;
+        
+        if (lineInfo.source === 'ai') {
+          stats.aiLines++;
+        } else if (lineInfo.source === 'human') {
+          stats.humanLines++;
+        }
+      }
+    }
+
+    return userStats;
+  }
+
+  /**
+   * 计算单个文件的增量统计（用于实时更新）
+   * @param filePath 文件路径
+   * @returns 按用户统计的增量
+   */
+  calculateFileStatsDelta(filePath: string): Map<string, {
+    name: string;
+    aiLines: number;
+    humanLines: number;
+    totalLines: number;
+  }> {
+    const map = this.fileMaps.get(filePath);
+    const delta = new Map<string, {
+      name: string;
+      aiLines: number;
+      humanLines: number;
+      totalLines: number;
+    }>();
+
+    if (!map) return delta;
+
+    for (const lineInfo of Object.values(map)) {
+      if (lineInfo.status === 'deleted') continue;
+
+      const email = lineInfo.author || 'unknown';
+      
+      if (!delta.has(email)) {
+        delta.set(email, {
+          name: lineInfo.author?.split('@')[0] || 'Unknown',
+          aiLines: 0,
+          humanLines: 0,
+          totalLines: 0
+        });
+      }
+
+      const stats = delta.get(email)!;
+      stats.totalLines++;
+      
+      if (lineInfo.source === 'ai') {
+        stats.aiLines++;
+      } else if (lineInfo.source === 'human') {
+        stats.humanLines++;
+      }
+    }
+
+    return delta;
   }
 }

@@ -301,7 +301,6 @@ export class ReportGenerator {
     }
     
     return weeklyStats.totalLines > 0 ? weeklyStats : null;
-    }
   }
   
   // 获取提交的统计信息

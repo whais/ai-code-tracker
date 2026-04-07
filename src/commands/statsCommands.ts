@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { TeamStatsManager } from '../core/teamStats';
 import { WebviewManager } from '../ui/webview';
 import { getCurrentGitUser } from '../utils/git';
@@ -101,5 +102,3 @@ ${memberList}
     return '█'.repeat(filled) + '░'.repeat(empty);
   }
 }
-
-import * as path from 'path';

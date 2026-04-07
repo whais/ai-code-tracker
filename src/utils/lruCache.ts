@@ -58,7 +58,7 @@ export class LRUCache<K, V> {
     // 如果超出容量限制，删除最久未使用的（Map 的第一个元素）
     if (this.cache.size >= this.maxSize) {
       const firstKey = this.cache.keys().next().value;
-      this.cache.delete(firstKey);
+      this.cache.delete(firstKey as K);
     }
 
     this.cache.set(key, {

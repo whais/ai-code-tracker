@@ -277,7 +277,7 @@ export class StorageManager {
    */
   loadLineTrackerData(): [string, any][] | null {
     this.checkInitialized();
-    return this.context!.workspaceState.get<[string, any][]>(StorageKeys.LINE_TRACKER_DATA, null);
+    return this.context!.workspaceState.get<[string, any][] | null>(StorageKeys.LINE_TRACKER_DATA, null);
   }
 
   // ==================== 整合统计元数据存储 ====================
