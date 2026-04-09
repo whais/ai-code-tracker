@@ -10,5 +10,6 @@
 	"typescript.tsc.autoDetect": "off",
 	"aiCodeTracker.teamMembers": {
 		"edentang_v@didiglobal.com": "edentang_v"
-	}
+	},
+	"aiCodeTracker.enabled": false
 }

@@ -36,10 +36,16 @@ export interface SharedTeamStats {
   };
 }
 
+// 缓存项接口
+interface CacheEntry {
+  stats: SharedTeamStats;
+  timestamp: number;
+}
+
 export class StatsFileManager {
   private static instance: StatsFileManager;
-  private statsCache: SharedTeamStats | null = null;
-  private lastReadTime: number = 0;
+  // 按项目路径存储缓存，避免多项目串数据
+  private statsCache: Map<string, CacheEntry> = new Map();
   private readonly CACHE_TTL = 5000; // 缓存 5 秒
 
   private constructor() {}
@@ -49,6 +55,13 @@ export class StatsFileManager {
       StatsFileManager.instance = new StatsFileManager();
     }
     return StatsFileManager.instance;
+  }
+
+  /**
+   * 获取当前工作区的缓存键
+   */
+  private getCacheKey(): string | null {
+    return getWorkspaceRoot();
   }
 
   /**
@@ -80,16 +93,20 @@ export class StatsFileManager {
   }
 
   /**
-   * 读取统计文件（带缓存）
+   * 读取统计文件（带缓存，按项目隔离）
    */
   readStats(): SharedTeamStats | null {
-    // 检查缓存是否有效
-    if (this.statsCache && Date.now() - this.lastReadTime < this.CACHE_TTL) {
-      return this.statsCache;
-    }
+    const cacheKey = this.getCacheKey();
+    if (!cacheKey) return null;
 
     const filePath = this.getStatsFilePath();
     if (!filePath) return null;
+
+    // 检查缓存是否有效（按项目路径）
+    const cached = this.statsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+      return cached.stats;
+    }
 
     try {
       if (!fs.existsSync(filePath)) {
@@ -99,9 +116,11 @@ export class StatsFileManager {
       const content = fs.readFileSync(filePath, 'utf-8');
       const stats = JSON.parse(content) as SharedTeamStats;
       
-      // 更新缓存
-      this.statsCache = stats;
-      this.lastReadTime = Date.now();
+      // 更新缓存（按项目路径存储）
+      this.statsCache.set(cacheKey, {
+        stats,
+        timestamp: Date.now()
+      });
       
       return stats;
     } catch (error) {
@@ -116,8 +135,9 @@ export class StatsFileManager {
   writeStats(stats: SharedTeamStats): boolean {
     if (!this.ensureStatsDir()) return false;
 
+    const cacheKey = this.getCacheKey();
     const filePath = this.getStatsFilePath();
-    if (!filePath) return false;
+    if (!filePath || !cacheKey) return false;
 
     try {
       // 更新元数据
@@ -127,9 +147,11 @@ export class StatsFileManager {
       const content = JSON.stringify(stats, null, 2);
       fs.writeFileSync(filePath, content, 'utf-8');
       
-      // 更新缓存
-      this.statsCache = stats;
-      this.lastReadTime = Date.now();
+      // 更新缓存（按项目路径存储）
+      this.statsCache.set(cacheKey, {
+        stats,
+        timestamp: Date.now()
+      });
       
       console.log('[StatsFileManager] 统计文件已更新:', filePath);
       return true;
@@ -141,6 +163,7 @@ export class StatsFileManager {
 
   /**
    * 更新或添加成员统计（增量更新）
+   * 注意：此方法会累加数值，适合增量更新场景
    */
   updateMemberStats(email: string, delta: Partial<SharedMemberStats>): boolean {
     const stats = this.readStats() || this.createEmptyStats();
@@ -170,6 +193,64 @@ export class StatsFileManager {
 
     // 更新总计
     this.recalculateTotal(stats);
+    
+    return this.writeStats(stats);
+  }
+
+  /**
+   * 设置成员统计（覆盖更新）
+   * 注意：此方法会直接覆盖数值，适合全量更新场景
+   */
+  setMemberStats(email: string, data: SharedMemberStats): boolean {
+    const stats = this.readStats() || this.createEmptyStats();
+    
+    // 直接覆盖成员数据
+    stats.members[email] = {
+      ...data,
+      lastUpdated: Date.now()
+    };
+
+    // 更新总计
+    this.recalculateTotal(stats);
+    
+    return this.writeStats(stats);
+  }
+
+  /**
+   * 批量设置所有成员统计（完全覆盖）
+   * 注意：此方法会清空现有成员数据，用新数据完全替换
+   */
+  setAllMemberStats(members: Record<string, SharedMemberStats>): boolean {
+    const stats = this.readStats() || this.createEmptyStats();
+    
+    // 完全替换成员数据
+    stats.members = { ...members };
+    
+    // 更新时间和版本
+    stats.lastUpdated = Date.now();
+    stats.version = '1.0';
+    
+    // 重新计算总计
+    let totalLines = 0;
+    let aiLines = 0;
+    let humanLines = 0;
+    
+    for (const member of Object.values(members)) {
+      totalLines += member.totalLines;
+      aiLines += member.aiLines;
+      humanLines += member.humanLines;
+      // 确保百分比正确
+      member.aiPercentage = member.totalLines > 0 
+        ? (member.aiLines / member.totalLines) * 100 
+        : 0;
+    }
+    
+    stats.total = {
+      totalLines,
+      aiLines,
+      humanLines,
+      aiPercentage: totalLines > 0 ? (aiLines / totalLines) * 100 : 0
+    };
     
     return this.writeStats(stats);
   }
@@ -231,12 +312,21 @@ export class StatsFileManager {
   }
 
   /**
-   * 强制刷新（清除缓存并重新读取）
+   * 强制刷新（清除当前项目的缓存并重新读取）
    */
   forceRefresh(): SharedTeamStats | null {
-    this.statsCache = null;
-    this.lastReadTime = 0;
+    const cacheKey = this.getCacheKey();
+    if (cacheKey) {
+      this.statsCache.delete(cacheKey);
+    }
     return this.readStats();
+  }
+
+  /**
+   * 清除所有缓存（用于切换项目时）
+   */
+  clearAllCache(): void {
+    this.statsCache.clear();
   }
 
   /**

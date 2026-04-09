@@ -19,6 +19,7 @@ import { statsFileManager } from './core/statsFileManager';
 import { logger, LogLevel } from './utils/logger';
 import { storage } from './utils/storage';
 import { getWorkspaceRoot } from './utils/workspace';
+import { SidebarProvider } from './ui/sidebarProvider';
 
 const execAsync = util.promisify(cp.exec);
 
@@ -32,16 +33,140 @@ let statsCommands: StatsCommands;
 let markCommands: MarkCommands;
 let reportCommands: ReportCommands;
 let settingsCommands: SettingsCommands;
+let sidebarProvider: SidebarProvider;
 
-// 防抖定时器，用于延迟更新统计文件
-let statsUpdateTimer: NodeJS.Timeout | null = null;
+// 当前工作区跟踪，用于检测工作区切换
+let currentWorkspaceRoot: string | null = null;
+
+// 防抖定时器管理（按工作区隔离，防止多项目串数据）
+interface StatsUpdateState {
+  timer: NodeJS.Timeout | null;
+  hasPendingUpdate: boolean;
+}
+const statsUpdateStates = new Map<string, StatsUpdateState>();
 const STATS_UPDATE_DELAY = 3000; // 3 秒防抖延迟
-// 标记是否有待更新的统计
-let hasPendingStatsUpdate = false;
+
+/**
+ * 获取当前工作区的更新状态
+ */
+function getUpdateState(): StatsUpdateState {
+  const workspaceRoot = getWorkspaceRoot();
+  const key = workspaceRoot || 'default';
+  
+  if (!statsUpdateStates.has(key)) {
+    statsUpdateStates.set(key, {
+      timer: null,
+      hasPendingUpdate: false
+    });
+  }
+  return statsUpdateStates.get(key)!;
+}
+
+/**
+ * 检查当前工作区是否启用了 AI 统计
+ */
+function isStatsEnabled(): boolean {
+  const config = vscode.workspace.getConfiguration('aiCodeTracker');
+  return config.get<boolean>('enabled', false);
+}
+
+/**
+ * 切换统计开关
+ */
+async function toggleEnabled(): Promise<void> {
+  const config = vscode.workspace.getConfiguration('aiCodeTracker');
+  const currentValue = config.get<boolean>('enabled', false);
+  const newValue = !currentValue;
+  
+  // 更新配置（工作区级别）
+  await config.update('enabled', newValue, false);
+  
+  // 刷新侧边栏
+  sidebarProvider?.refresh();
+  
+  if (newValue) {
+    // 启用统计
+    vscode.window.showInformationMessage('✅ AI 代码统计已启用');
+    
+    // 初始化统计组件
+    await initializeStats();
+    
+    // 分析当前工作区
+    await gitAnalyzer.analyzeWorkspace();
+    
+    // 保存统计数据到持久化存储
+    await storage.saveTeamStats(statsManager.getStats());
+    
+    // 更新状态栏
+    await statusBarManager.update();
+    
+    // 显示启动提示
+    vscode.window.showInformationMessage('📊 开始统计 AI 代码，使用 Cmd+Shift+V 进行智能粘贴');
+  } else {
+    // 禁用统计
+    vscode.window.showInformationMessage('⏸️ AI 代码统计已禁用');
+    
+    // 清理状态栏
+    statusBarManager?.dispose();
+  }
+}
+
+/**
+ * 初始化统计相关组件
+ */
+async function initializeStats(): Promise<void> {
+  if (statsManager) return; // 已经初始化
+  
+  // 初始化核心组件
+  statsManager = new TeamStatsManager();
+  statsManager.loadFromStorage(); // 从持久化存储加载数据
+  
+  gitAnalyzer = new GitAnalyzer(statsManager.getStats(), () => {
+    statusBarManager?.update();
+  });
+  
+  // 初始化 UI
+  statusBarManager = new StatusBarManager(statsManager);
+  
+  // 初始化命令
+  statsCommands = new StatsCommands(statsManager);
+  markCommands = new MarkCommands(gitAnalyzer, statsManager);
+  reportCommands = new ReportCommands(statsManager, statsCommands, storage.getContext()!);
+  
+  // 初始化监听器（传入 LineTracker 用于无感统计）
+  textChangeListener = new TextChangeListener(gitAnalyzer, lineTracker, async (source, document, startLine, endLine) => {
+    await addAIMark(document, startLine, endLine, source);
+  });
+  saveListener = new SaveListener(gitAnalyzer, lineTracker, async (document, startLine, endLine, source) => {
+    await addAIMark(document, startLine, endLine, source);
+  });
+  
+  // 初始化团队配置
+  await initTeamConfig();
+}
+
+/**
+ * 清理统计组件
+ */
+function disposeStats(): void {
+  statusBarManager?.dispose();
+  textChangeListener?.dispose();
+  statsManager = undefined as any;
+  gitAnalyzer = undefined as any;
+  statusBarManager = undefined as any;
+  textChangeListener = undefined as any;
+  saveListener = undefined as any;
+}
 
 export async function activate(context: vscode.ExtensionContext) {
   // 初始化存储管理器
   storage.initialize(context);
+  
+  // 记录当前工作区
+  currentWorkspaceRoot = getWorkspaceRoot();
+  if (currentWorkspaceRoot) {
+    logger.info(`当前工作区: ${currentWorkspaceRoot}`);
+  }
   
   // 初始化日志系统
   const config = vscode.workspace.getConfiguration('aiCodeTracker');
@@ -75,6 +200,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }
   }
   
+  // 注册侧边栏视图
+  sidebarProvider = new SidebarProvider(context);
+  vscode.window.registerTreeDataProvider('aiCodeTracker.sidebar', sidebarProvider);
+  
   // 监听配置变化
   const configChangeListener = vscode.workspace.onDidChangeConfiguration(event => {
     if (event.affectsConfiguration('aiCodeTracker.aiMarkPatterns') ||
@@ -83,131 +212,348 @@ export async function activate(context: vscode.ExtensionContext) {
       patternManager.loadPatterns();
       console.log('AI 标记配置已更新');
     }
+    
+    // 监听 enabled 配置变化（用于同步侧边栏状态）
+    if (event.affectsConfiguration('aiCodeTracker.enabled')) {
+      sidebarProvider.refresh();
+    }
   });
   context.subscriptions.push(configChangeListener);
   
-  // 初始化核心组件
-  statsManager = new TeamStatsManager();
-  statsManager.loadFromStorage(); // 从持久化存储加载数据
-  
-  gitAnalyzer = new GitAnalyzer(statsManager.getStats(), () => {
-    statusBarManager?.update();
+  // 监听工作区变化（切换项目时重新加载数据）
+  const workspaceChangeListener = vscode.workspace.onDidChangeWorkspaceFolders(async event => {
+    const newWorkspaceRoot = getWorkspaceRoot();
+    if (newWorkspaceRoot !== currentWorkspaceRoot) {
+      logger.info(`工作区切换: ${currentWorkspaceRoot} -> ${newWorkspaceRoot}`);
+      currentWorkspaceRoot = newWorkspaceRoot;
+      
+      // 刷新侧边栏
+      sidebarProvider.refresh();
+      
+      // 如果启用了统计，重新加载当前工作区的统计数据
+      if (isStatsEnabled()) {
+        await reloadWorkspaceData();
+      }
+    }
   });
+  context.subscriptions.push(workspaceChangeListener);
   
-  // 初始化 UI
-  statusBarManager = new StatusBarManager(statsManager);
+  // 监听活动编辑器变化（在不同工作区的文件间切换时更新）
+  const activeEditorListener = vscode.window.onDidChangeActiveTextEditor(async editor => {
+    if (editor) {
+      const fileWorkspace = getWorkspaceRoot(editor.document.fileName);
+      if (fileWorkspace && fileWorkspace !== currentWorkspaceRoot) {
+        logger.info(`切换到不同工作区的文件: ${fileWorkspace}`);
+        currentWorkspaceRoot = fileWorkspace;
+        
+        // 刷新侧边栏
+        sidebarProvider.refresh();
+        
+        // 如果启用了统计，重新加载当前工作区的统计数据
+        if (isStatsEnabled()) {
+          await reloadWorkspaceData();
+        }
+      }
+    }
+  });
+  context.subscriptions.push(activeEditorListener);
   
-  // 初始化命令
-  statsCommands = new StatsCommands(statsManager);
-  markCommands = new MarkCommands(gitAnalyzer, statsManager);
-  reportCommands = new ReportCommands(statsManager, statsCommands, context);
+  // 初始化设置命令（不需要统计启用也能使用）
   settingsCommands = new SettingsCommands();
   
-  // 注册命令
+  // 注册基础命令（不需要统计启用）
+  context.subscriptions.push(
+    vscode.commands.registerCommand('ai-code-tracker.toggleEnabled', toggleEnabled)
+  );
+  
+  // 注册其他命令（这些命令需要统计启用时才可用）
   const commands = registerCommands(statsCommands, markCommands, reportCommands, settingsCommands);
   context.subscriptions.push(...commands);
   
-  // 初始化监听器（传入 LineTracker 用于无感统计）
-  textChangeListener = new TextChangeListener(gitAnalyzer, lineTracker, async (source, document, startLine, endLine) => {
-    await addAIMark(document, startLine, endLine, source);
-  });
-  saveListener = new SaveListener(gitAnalyzer, lineTracker, async (document, startLine, endLine, source) => {
-    await addAIMark(document, startLine, endLine, source);
-  });
-  
-  // 注册事件监听
+  // 注册事件监听（带启用检查）
   const textChangeDisposable = vscode.workspace.onDidChangeTextDocument(
-    (e) => textChangeListener.handleTextChange(e)
+    (e) => {
+      // 只在启用统计时处理文本变化
+      if (isStatsEnabled() && textChangeListener) {
+        textChangeListener.handleTextChange(e);
+      }
+    }
   );
+  
+  // 保存监听：处理 AI 代码检测和标记（带启用检查）
   const saveDisposable = vscode.workspace.onDidSaveTextDocument(
-    (doc) => saveListener.handleDocumentSave(doc)
+    async (doc) => {
+      if (!isStatsEnabled()) return;
+      
+      // 先执行保存监听（可能弹出标记对话框）
+      if (saveListener) {
+        await saveListener.handleDocumentSave(doc);
+      }
+      
+      // 无论是否标记，都触发统计更新（使用防抖）
+      scheduleStatsFileUpdate(doc);
+    }
   );
   
-  // 注册防抖统计文件更新（文件保存时触发）
-  const statsUpdateDisposable = vscode.workspace.onDidSaveTextDocument(
-    (doc) => scheduleStatsFileUpdate(doc)
-  );
+  context.subscriptions.push(textChangeDisposable, saveDisposable);
   
-  context.subscriptions.push(textChangeDisposable, saveDisposable, statsUpdateDisposable);
-  
-  // 注册 pre-commit 钩子处理命令
+  // 注册 pre-commit 钩子处理命令（带启用检查）
   const preCommitDisposable = vscode.commands.registerCommand(
     'ai-code-tracker.preCommitUpdate',
-    () => handlePreCommitUpdate()
+    () => {
+      if (isStatsEnabled()) {
+        handlePreCommitUpdate();
+      } else {
+        vscode.window.showWarningMessage('请先启用 AI 代码统计');
+      }
+    }
   );
   context.subscriptions.push(preCommitDisposable);
   
   // 尝试安装 Git 钩子（如果可能）
   await installGitHook();
   
-  // 历史数据加载由 reportGenerator 处理
-  
-  // 初始化团队配置
-  await initTeamConfig();
-  
-  // 分析当前工作区
-  await gitAnalyzer.analyzeWorkspace();
-  
-  // 保存统计数据到持久化存储
-  await storage.saveTeamStats(statsManager.getStats());
-  
-  // 更新状态栏
-  await statusBarManager.update();
-  
-  // 定期保存统计数据（每 5 分钟）
-  const saveInterval = setInterval(async () => {
+  // 如果启用了统计，初始化统计组件
+  if (isStatsEnabled()) {
+    await initializeStats();
+    
+    // 分析当前工作区
+    await gitAnalyzer.analyzeWorkspace();
+    
+    // 保存统计数据到持久化存储
     await storage.saveTeamStats(statsManager.getStats());
-  }, 5 * 60 * 1000);
+    
+    // 更新状态栏
+    await statusBarManager.update();
+    
+    // 定期保存统计数据（每 5 分钟）
+    const saveInterval = setInterval(async () => {
+      if (isStatsEnabled() && statsManager) {
+        await storage.saveTeamStats(statsManager.getStats());
+      }
+    }, 5 * 60 * 1000);
+    
+    // 注册清理函数
+    context.subscriptions.push({
+      dispose: () => clearInterval(saveInterval)
+    });
+    
+    vscode.window.showInformationMessage('✅ AI Code Tracker 已启动，使用 Cmd+Shift+V 进行智能粘贴');
+  } else {
+    // 未启用统计，显示提示
+    vscode.window.showInformationMessage('📊 AI Code Tracker 已加载，点击左侧活动栏图标开启统计');
+  }
+}
+
+/**
+ * 重新加载当前工作区的数据
+ * 在工作区切换时调用
+ */
+async function reloadWorkspaceData(): Promise<void> {
+  if (!isStatsEnabled()) return;
   
-  // 注册清理函数
-  context.subscriptions.push({
-    dispose: () => clearInterval(saveInterval)
-  });
-  
-  vscode.window.showInformationMessage('✅ AI Code Tracker 已启动，使用 Cmd+Shift+V 进行智能粘贴');
+  try {
+    // 确保统计组件已初始化
+    await initializeStats();
+    
+    // 清除 GitAnalyzer 缓存
+    gitAnalyzer?.clearCache();
+    
+    // 清除 StatsFileManager 缓存
+    statsFileManager.clearAllCache();
+    
+    // 切换工作区（这会重置并重新加载统计数据）
+    statsManager?.switchWorkspace();
+    
+    // 重新分析当前工作区
+    await gitAnalyzer?.analyzeWorkspace();
+    
+    // 保存统计数据
+    await storage.saveTeamStats(statsManager?.getStats());
+    
+    // 更新状态栏
+    await statusBarManager?.update();
+    
+    logger.info('工作区数据已重新加载');
+  } catch (error) {
+    logger.error('重新加载工作区数据失败', error);
+  }
 }
 
 /**
  * 防抖更新统计文件
- * 在文件保存后延迟 3 秒更新，避免频繁写入
+ * 在文件保存后延迟 3 秒更新，避免频繁写入（按工作区隔离）
  */
 function scheduleStatsFileUpdate(document: vscode.TextDocument): void {
+  // 只在启用统计时执行
+  if (!isStatsEnabled()) return;
+  
+  // 只处理当前工作区的文件
+  const workspaceRoot = getWorkspaceRoot();
+  if (!workspaceRoot) return;
+  
+  // 检查文件是否属于当前工作区
+  if (!document.fileName.startsWith(workspaceRoot)) return;
+  
   // 只处理代码文件
   if (!isCodeFile(document.fileName)) return;
   
-  hasPendingStatsUpdate = true;
+  const state = getUpdateState();
+  state.hasPendingUpdate = true;
   
   // 清除之前的定时器
-  if (statsUpdateTimer) {
-    clearTimeout(statsUpdateTimer);
+  if (state.timer) {
+    clearTimeout(state.timer);
   }
   
   // 设置新的定时器
-  statsUpdateTimer = setTimeout(async () => {
-    await flushStatsToFile();
+  state.timer = setTimeout(async () => {
+    await flushStatsToFile(document);
   }, STATS_UPDATE_DELAY);
 }
 
 /**
  * 立即刷新统计到文件
+ * 从 LineTracker 和 GitAnalyzer 整合统计数据
  */
-async function flushStatsToFile(): Promise<void> {
-  if (!hasPendingStatsUpdate) return;
+async function flushStatsToFile(document?: vscode.TextDocument): Promise<void> {
+  // 只在启用统计时执行
+  if (!isStatsEnabled()) return;
+  
+  const state = getUpdateState();
+  if (!state.hasPendingUpdate && !document) return;
   
   try {
-    const userStats = lineTracker.getStatsByUser();
+    // 只统计当前工作区的文件
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) return;
     
-    for (const [email, stats] of userStats) {
-      statsFileManager.updateMemberStats(email, {
-        name: stats.name,
-        aiLines: stats.aiLines,
-        humanLines: stats.humanLines,
-        totalLines: stats.totalLines
-      });
+    // 获取当前用户信息（用于处理 "Not Committed Yet" 等情况）
+    const { getCurrentGitUser } = await import('./utils/git');
+    const currentUser = await getCurrentGitUser();
+    
+    // 1. 如果有指定文档，先触发 Git 分析（确保新文件被统计）
+    if (document) {
+      await gitAnalyzer.analyzeFile(document.fileName);
+      // 保存到 workspaceState
+      await storage.saveTeamStats(statsManager.getStats());
     }
     
-    hasPendingStatsUpdate = false;
-    logger.debug('统计文件已更新');
+    // 2. 从 statsManager 获取完整的团队统计（包含 Git 分析结果）
+    const teamStats = statsManager.getStats();
+    
+    // 3. 从 LineTracker 获取实时追踪数据（优先使用，因为包含 AI 标记信息）
+    const lineTrackerStats = lineTracker.getStatsByUser(workspaceRoot);
+    
+    // 4. 合并数据：以 LineTracker 数据为准（更精确），如果没有则使用 Git 分析数据
+    const mergedStats = new Map<string, {
+      name: string;
+      aiLines: number;
+      humanLines: number;
+      totalLines: number;
+    }>();
+    
+    // 先添加 LineTracker 的数据（优先级高）
+    for (const [email, stats] of lineTrackerStats) {
+      // 处理 "Not Committed Yet" 和空邮箱的情况
+      let normalizedEmail = email;
+      let normalizedName = stats.name;
+      
+      if (!email || email === '' || email === 'Not Committed Yet' || stats.name === 'Not Committed Yet') {
+        normalizedEmail = currentUser.email;
+        normalizedName = currentUser.name;
+      }
+      
+      const existing = mergedStats.get(normalizedEmail);
+      if (existing) {
+        // 合并同一用户的数据
+        existing.aiLines += stats.aiLines;
+        existing.humanLines += stats.humanLines;
+        existing.totalLines += stats.totalLines;
+      } else {
+        mergedStats.set(normalizedEmail, {
+          name: normalizedName,
+          aiLines: stats.aiLines,
+          humanLines: stats.humanLines,
+          totalLines: stats.totalLines
+        });
+      }
+    }
+    
+    // 再添加 Git 分析的数据（补充 LineTracker 没有的数据）
+    for (const [email, member] of teamStats.members) {
+      // 处理 "Not Committed Yet" 和空邮箱的情况
+      let normalizedEmail = email;
+      let normalizedName = member.name;
+      
+      if (!email || email === '' || email === 'Not Committed Yet' || member.name === 'Not Committed Yet') {
+        normalizedEmail = currentUser.email;
+        normalizedName = currentUser.name;
+      }
+      
+      // 只统计当前工作区的文件
+      const workspaceFiles = Array.from(member.files.values()).filter(f => 
+        f.filePath.startsWith(workspaceRoot)
+      );
+      
+      if (workspaceFiles.length === 0) continue;
+      
+      // 计算当前工作区的统计
+      const workspaceAiLines = workspaceFiles.reduce((sum, f) => sum + f.aiLines, 0);
+      const workspaceHumanLines = workspaceFiles.reduce((sum, f) => sum + f.humanLines, 0);
+      const workspaceTotalLines = workspaceFiles.reduce((sum, f) => sum + f.totalLines, 0);
+      
+      if (mergedStats.has(normalizedEmail)) {
+        // 如果 LineTracker 已有数据，合并（取最大值，避免重复计算）
+        const existing = mergedStats.get(normalizedEmail)!;
+        existing.aiLines = Math.max(existing.aiLines, workspaceAiLines);
+        existing.humanLines = Math.max(existing.humanLines, workspaceHumanLines);
+        existing.totalLines = Math.max(existing.totalLines, workspaceTotalLines);
+      } else {
+        // 如果 LineTracker 没有，使用 Git 分析的数据
+        mergedStats.set(normalizedEmail, {
+          name: normalizedName,
+          aiLines: workspaceAiLines,
+          humanLines: workspaceHumanLines,
+          totalLines: workspaceTotalLines
+        });
+      }
+    }
+    
+    // 5. 准备写入 stats.json 的数据（过滤掉无效的用户名）
+    const membersToWrite: Record<string, import('./core/statsFileManager').SharedMemberStats> = {};
+    
+    for (const [email, stats] of mergedStats) {
+      // 过滤：确保不会写入 "Not Committed Yet" 或空用户
+      if (!email || email === '' || email === 'Not Committed Yet' || 
+          !stats.name || stats.name === 'Not Committed Yet') {
+        logger.warn('跳过无效用户数据:', { email, name: stats.name });
+        continue;
+      }
+      
+      // 计算百分比
+      const aiPercentage = stats.totalLines > 0 
+        ? (stats.aiLines / stats.totalLines) * 100 
+        : 0;
+      
+      membersToWrite[email] = {
+        name: stats.name,
+        totalLines: stats.totalLines,
+        aiLines: stats.aiLines,
+        humanLines: stats.humanLines,
+        aiPercentage: aiPercentage,
+        lastUpdated: Date.now()
+      };
+    }
+    
+    // 6. 使用 setAllMemberStats 完全覆盖写入（避免增量累加导致数据翻倍）
+    statsFileManager.setAllMemberStats(membersToWrite);
+    
+    // 7. 更新状态栏显示
+    await statusBarManager.update();
+    
+    state.hasPendingUpdate = false;
+    logger.debug('统计文件已更新:', workspaceRoot, '成员数:', mergedStats.size);
   } catch (error) {
     logger.error('更新统计文件失败', error);
   }
@@ -230,6 +576,12 @@ function isCodeFile(filePath: string): boolean {
  * 强制刷新统计并添加到 Git 暂存区
  */
 async function handlePreCommitUpdate(): Promise<void> {
+  // 只在启用统计时执行
+  if (!isStatsEnabled()) {
+    logger.warn('pre-commit 钩子被调用，但统计未启用');
+    return;
+  }
+  
   logger.info('执行 pre-commit 统计更新');
   
   // 1. 立即刷新统计
@@ -258,23 +610,23 @@ async function handlePreCommitUpdate(): Promise<void> {
  * 分析当前工作区所有追踪的文件
  */
 async function fullStatsUpdate(): Promise<void> {
+  // 只在启用统计时执行
+  if (!isStatsEnabled()) return;
+  
   try {
-    const trackedFiles = lineTracker.getTrackedFiles();
+    const workspaceRoot = getWorkspaceRoot();
+    if (!workspaceRoot) return;
     
-    for (const filePath of trackedFiles) {
-      const delta = lineTracker.calculateFileStatsDelta(filePath);
-      
-      for (const [email, stats] of delta) {
-        statsFileManager.updateMemberStats(email, {
-          name: stats.name,
-          aiLines: stats.aiLines,
-          humanLines: stats.humanLines,
-          totalLines: stats.totalLines
-        });
-      }
-    }
+    // 1. 重新分析整个工作区（确保 Git 数据是最新的）
+    await gitAnalyzer.analyzeWorkspace();
+    await storage.saveTeamStats(statsManager.getStats());
     
-    logger.info('全量统计更新完成', { fileCount: trackedFiles.length });
+    // 2. 调用 flushStatsToFile 进行完整的数据合并和保存
+    const state = getUpdateState();
+    state.hasPendingUpdate = true;
+    await flushStatsToFile();
+    
+    logger.info('全量统计更新完成', { workspace: workspaceRoot });
   } catch (error) {
     logger.error('全量统计更新失败', error);
   }
@@ -330,6 +682,9 @@ async function addAIMark(
   endLine: number,
   source: string
 ): Promise<void> {
+  // 只在启用统计时执行
+  if (!isStatsEnabled()) return;
+  
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document !== document) return;
   
@@ -397,7 +752,14 @@ async function addAIMark(
     }
   });
   
+  // 触发 Git 分析
   await gitAnalyzer.analyzeFile(document.fileName);
+  
+  // 保存到 workspaceState
+  await storage.saveTeamStats(statsManager.getStats());
+  
+  // 立即触发统计文件更新（不等待防抖）
+  await flushStatsToFile(document);
 }
 
 export function deactivate() {

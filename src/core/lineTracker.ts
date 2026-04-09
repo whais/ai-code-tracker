@@ -517,9 +517,10 @@ export class LineTracker {
 
   /**
    * 按用户聚合统计信息（用于团队统计文件）
+   * @param workspaceRoot 可选工作区根路径，传入则只统计该工作区的文件
    * @returns Map<email, {aiLines, humanLines, totalLines}>
    */
-  getStatsByUser(): Map<string, { 
+  getStatsByUser(workspaceRoot?: string): Map<string, { 
     name: string; 
     aiLines: number; 
     humanLines: number; 
@@ -533,6 +534,11 @@ export class LineTracker {
     }>();
 
     for (const [filePath, lineMap] of this.fileMaps) {
+      // 如果指定了工作区，只统计该工作区的文件
+      if (workspaceRoot && !filePath.startsWith(workspaceRoot)) {
+        continue;
+      }
+
       for (const [lineNum, lineInfo] of Object.entries(lineMap)) {
         // 跳过已删除的行
         if (lineInfo.status === 'deleted') continue;

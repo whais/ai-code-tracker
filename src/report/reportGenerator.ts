@@ -225,15 +225,18 @@ export class ReportGenerator {
   
   // 收集Git数据
   private async collectGitData(start: Date, end: Date): Promise<any> {
-    const folders = getWorkspaceFolders();
-    if (folders.length === 0) {
+    // 只收集当前工作区的数据，避免多项目串数据
+    const { getWorkspaceRoot } = await import('../utils/workspace');
+    const workspacePath = getWorkspaceRoot();
+    
+    if (!workspacePath) {
       throw new Error('没有打开的工作区');
     }
     
     const startStr = start.toISOString().split('T')[0];
     const endStr = end.toISOString().split('T')[0];
     
-    // 合并多个工作区的统计数据
+    // 当前工作区的统计数据
     const weeklyStats = {
       totalLines: 0,
       aiLines: 0,
@@ -244,60 +247,54 @@ export class ReportGenerator {
       dailyData: new Map<string, any>()
     };
     
-    // 遍历所有工作区收集数据
-    for (const folder of folders) {
-      const workspacePath = folder.uri.fsPath;
+    try {
+      // 获取本周所有提交
+      const { stdout: gitLog } = await execAsync(
+        `git log --since="${startStr}" --until="${endStr}" --pretty=format:"%H|%an|%ae|%ad" --date=short`,
+        { cwd: workspacePath }
+      );
       
-      try {
-        // 获取本周所有提交
-        const { stdout: gitLog } = await execAsync(
-          `git log --since="${startStr}" --until="${endStr}" --pretty=format:"%H|%an|%ae|%ad" --date=short`,
-          { cwd: workspacePath }
-        );
+      const commits = gitLog.split('\n').filter(l => l.trim()).map(line => {
+        const [hash, name, email, date] = line.split('|');
+        return { hash, name, email, date };
+      });
+      
+      for (const commit of commits) {
+        const stats = await this.getCommitStats(commit.hash, workspacePath);
         
-        const commits = gitLog.split('\n').filter(l => l.trim()).map(line => {
-          const [hash, name, email, date] = line.split('|');
-          return { hash, name, email, date };
-        });
-        
-        for (const commit of commits) {
-          const stats = await this.getCommitStats(commit.hash, workspacePath);
-          
-          // 更新作者统计
-          let author = weeklyStats.authors.get(commit.email);
-          if (!author) {
-            author = {
-              name: commit.name,
-              email: commit.email,
-              totalLines: 0,
-              aiLines: 0,
-              humanLines: 0,
-              modifiedAILines: 0
-            };
-            weeklyStats.authors.set(commit.email, author);
-          }
-          
-          author.totalLines += stats.totalLines;
-          author.aiLines += stats.aiLines;
-          author.humanLines += stats.humanLines;
-          
-          weeklyStats.totalLines += stats.totalLines;
-          weeklyStats.aiLines += stats.aiLines;
-          weeklyStats.humanLines += stats.humanLines;
-          
-          // 更新每日数据
-          let dayData = weeklyStats.dailyData.get(commit.date);
-          if (!dayData) {
-            dayData = { date: commit.date, totalLines: 0, aiLines: 0 };
-            weeklyStats.dailyData.set(commit.date, dayData);
-          }
-          dayData.totalLines += stats.totalLines;
-          dayData.aiLines += stats.aiLines;
+        // 更新作者统计
+        let author = weeklyStats.authors.get(commit.email);
+        if (!author) {
+          author = {
+            name: commit.name,
+            email: commit.email,
+            totalLines: 0,
+            aiLines: 0,
+            humanLines: 0,
+            modifiedAILines: 0
+          };
+          weeklyStats.authors.set(commit.email, author);
         }
-      } catch (error) {
-        console.error(`收集Git数据失败 (${folder.name}):`, error);
-        // 继续处理其他工作区
+        
+        author.totalLines += stats.totalLines;
+        author.aiLines += stats.aiLines;
+        author.humanLines += stats.humanLines;
+        
+        weeklyStats.totalLines += stats.totalLines;
+        weeklyStats.aiLines += stats.aiLines;
+        weeklyStats.humanLines += stats.humanLines;
+        
+        // 更新每日数据
+        let dayData = weeklyStats.dailyData.get(commit.date);
+        if (!dayData) {
+          dayData = { date: commit.date, totalLines: 0, aiLines: 0 };
+          weeklyStats.dailyData.set(commit.date, dayData);
+        }
+        dayData.totalLines += stats.totalLines;
+        dayData.aiLines += stats.aiLines;
       }
+    } catch (error) {
+      console.error(`收集Git数据失败 (${workspacePath}):`, error);
     }
     
     return weeklyStats.totalLines > 0 ? weeklyStats : null;

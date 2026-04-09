@@ -74,6 +74,45 @@ export class GitAnalyzer {
     return this.blameCache.getStats();
   }
 
+  /**
+   * 减去指定文件的历史统计贡献
+   * 在重新分析文件前调用，避免重复累加
+   */
+  private subtractFileStats(filePath: string): void {
+    // 遍历所有成员，查找并减去该文件的贡献
+    for (const [email, member] of this.teamStats.members) {
+      const fileStat = member.files.get(filePath);
+      if (!fileStat) continue;
+
+      // 减去该成员的贡献
+      member.totalLines -= fileStat.totalLines;
+      member.aiLines -= fileStat.aiLines;
+      member.humanLines -= fileStat.humanLines;
+      member.aiPercentage = member.totalLines > 0 
+        ? (member.aiLines / member.totalLines * 100) 
+        : 0;
+
+      // 从成员的 files 中删除该文件
+      member.files.delete(filePath);
+
+      // 如果成员没有文件了，可以选择删除该成员或保留
+      // 这里保留成员，即使统计为 0
+
+      // 减去全局统计
+      this.teamStats.totalLines -= fileStat.totalLines;
+      this.teamStats.aiLines -= fileStat.aiLines;
+      this.teamStats.humanLines -= fileStat.humanLines;
+
+      console.log(`[GitAnalyzer] 减去文件历史贡献: ${filePath}, 成员: ${member.name}, ` +
+        `AI: -${fileStat.aiLines}, Human: -${fileStat.humanLines}`);
+    }
+
+    // 确保统计不会变成负数（防止数据不一致）
+    this.teamStats.totalLines = Math.max(0, this.teamStats.totalLines);
+    this.teamStats.aiLines = Math.max(0, this.teamStats.aiLines);
+    this.teamStats.humanLines = Math.max(0, this.teamStats.humanLines);
+  }
+
   async analyzeFile(filePath: string): Promise<void> {
     // 获取文件对应的工作区
     const workspaceFolder = getWorkspaceFolderForFile(filePath);
@@ -138,20 +177,22 @@ export class GitAnalyzer {
   }
 
   async analyzeWorkspace(): Promise<void> {
-    const folders = getWorkspaceFolders();
-    if (folders.length === 0) return;
+    // 只分析当前活动工作区，避免多项目数据串扰
+    const { getWorkspaceRoot } = await import('../utils/workspace');
+    const workspacePath = getWorkspaceRoot();
     
-    // 分析所有工作区
-    for (const folder of folders) {
-      const workspacePath = folder.uri.fsPath;
-      console.log(`[GitAnalyzer] 分析工作区: ${folder.name} (${workspacePath})`);
-      
-      const files = await this.findCodeFiles(workspacePath);
-      console.log(`[GitAnalyzer] 找到 ${files.length} 个文件待分析`);
-      
-      for (const file of files) {
-        await this.analyzeFile(file);
-      }
+    if (!workspacePath) {
+      console.log('[GitAnalyzer] 没有打开的工作区');
+      return;
+    }
+    
+    console.log(`[GitAnalyzer] 分析当前工作区: ${workspacePath}`);
+    
+    const files = await this.findCodeFiles(workspacePath);
+    console.log(`[GitAnalyzer] 找到 ${files.length} 个文件待分析`);
+    
+    for (const file of files) {
+      await this.analyzeFile(file);
     }
   }
 
@@ -294,6 +335,10 @@ export class GitAnalyzer {
     const teamMembers = config.get('teamMembers') as Record<string, string> || {};
     const patternManager = MarkPatternManager.getInstance();
     
+    // 获取当前 Git 用户信息，用于处理 "Not Committed Yet" 的情况
+    const { getCurrentGitUser } = await import('../utils/git');
+    const currentUser = await getCurrentGitUser();
+    
     // 检查文件大小，大于 1MB 的文件跳过分析以避免性能问题
     try {
       const stats = await fsp.stat(filePath);
@@ -304,6 +349,10 @@ export class GitAnalyzer {
     } catch {
       return;
     }
+    
+    // 关键修复：在重新分析前，先减去该文件之前的历史贡献
+    // 这避免了重复累加同一文件的统计
+    this.subtractFileStats(filePath);
     
     let content: string;
     try {
@@ -409,8 +458,17 @@ export class GitAnalyzer {
         integratedStats.sourceBreakdown.fromBlame++;
       }
       
-      const email = author.email;
-      const displayName = teamMembers[email] || author.name || email.split('@')[0];
+      // 处理 "Not Committed Yet" 的情况：将其归属到当前用户
+      let email = author.email;
+      let authorName = author.name;
+      
+      // 如果邮箱为空或者是 "Not Committed Yet" 作者，使用当前用户信息
+      if (!email || email === '' || authorName === 'Not Committed Yet') {
+        email = currentUser.email;
+        authorName = currentUser.name;
+      }
+      
+      const displayName = teamMembers[email] || authorName || email.split('@')[0];
       
       let member = this.teamStats.members.get(email);
       if (!member) {
@@ -425,6 +483,11 @@ export class GitAnalyzer {
           files: new Map()
         };
         this.teamStats.members.set(email, member);
+      }
+      
+      // 更新成员名称（如果 Git 配置有变化）
+      if (member.name !== displayName) {
+        member.name = displayName;
       }
       
       member.totalLines++;

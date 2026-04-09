@@ -16,6 +16,12 @@
   "contributes": {
     "commands": [
       {
+        "command": "ai-code-tracker.toggleEnabled",
+        "title": "切换 AI 统计开关",
+        "category": "AI Code Tracker",
+        "icon": "$(play-circle)"
+      },
+      {
         "command": "ai-code-tracker.showStats",
         "title": "显示个人AI代码统计",
         "category": "AI Code Tracker"
@@ -93,9 +99,32 @@
         }
       ]
     },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "aiCodeTracker",
+          "title": "AI Code Tracker",
+          "icon": "$(graph-line)"
+        }
+      ]
+    },
+    "views": {
+      "aiCodeTracker": [
+        {
+          "id": "aiCodeTracker.sidebar",
+          "name": "统计控制",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
     "configuration": {
       "title": "AI Code Tracker",
       "properties": {
+        "aiCodeTracker.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否启用 AI 代码统计功能（每个项目需要单独开启）"
+        },
         "aiCodeTracker.enableGitIntegration": {
           "type": "boolean",
           "default": true,
@@ -313,6 +342,10 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/ai-code-tracker"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.0",

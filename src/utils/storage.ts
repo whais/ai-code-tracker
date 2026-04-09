@@ -68,6 +68,13 @@ export class StorageManager {
   }
 
   /**
+   * 获取 ExtensionContext
+   */
+  getContext(): vscode.ExtensionContext | null {
+    return this.context;
+  }
+
+  /**
    * 将 TeamStats 序列化为可存储的格式
    */
   private serializeTeamStats(stats: TeamStats): SerializedTeamStats {
@@ -147,26 +154,28 @@ export class StorageManager {
   }
 
   /**
-   * 保存团队统计数据
+   * 保存团队统计数据（按工作区隔离）
    * @param stats 团队统计数据
    */
   async saveTeamStats(stats: TeamStats): Promise<void> {
     this.checkInitialized();
     
     const serialized = this.serializeTeamStats(stats);
-    await this.context!.globalState.update(StorageKeys.TEAM_STATS, serialized);
+    // 使用 workspaceState 替代 globalState，实现按工作区隔离
+    await this.context!.workspaceState.update(StorageKeys.TEAM_STATS, serialized);
     
-    console.log('[Storage] 团队统计数据已保存');
+    console.log('[Storage] 团队统计数据已保存（当前工作区）');
   }
 
   /**
-   * 加载团队统计数据
+   * 加载团队统计数据（按工作区隔离）
    * @returns 团队统计数据，如果没有则返回 null
    */
   loadTeamStats(): TeamStats | null {
     this.checkInitialized();
     
-    const data = this.context!.globalState.get<SerializedTeamStats>(StorageKeys.TEAM_STATS);
+    // 使用 workspaceState 替代 globalState，实现按工作区隔离
+    const data = this.context!.workspaceState.get<SerializedTeamStats>(StorageKeys.TEAM_STATS);
     if (!data) {
       return null;
     }
@@ -182,12 +191,12 @@ export class StorageManager {
   }
 
   /**
-   * 清除团队统计数据
+   * 清除团队统计数据（当前工作区）
    */
   async clearTeamStats(): Promise<void> {
     this.checkInitialized();
-    await this.context!.globalState.update(StorageKeys.TEAM_STATS, undefined);
-    console.log('[Storage] 团队统计数据已清除');
+    await this.context!.workspaceState.update(StorageKeys.TEAM_STATS, undefined);
+    console.log('[Storage] 团队统计数据已清除（当前工作区）');
   }
 
   /**
@@ -231,16 +240,19 @@ export class StorageManager {
   }
 
   /**
-   * 清除所有存储的数据
+   * 清除所有存储的数据（当前工作区）
    */
   async clearAll(): Promise<void> {
     this.checkInitialized();
     
-    await this.context!.globalState.update(StorageKeys.TEAM_STATS, undefined);
+    // 清除当前工作区的所有数据
+    await this.context!.workspaceState.update(StorageKeys.TEAM_STATS, undefined);
     await this.context!.workspaceState.update(StorageKeys.LAST_ANALYZED, undefined);
     await this.context!.workspaceState.update(StorageKeys.CACHE_METADATA, undefined);
+    await this.context!.workspaceState.update(StorageKeys.LINE_TRACKER_DATA, undefined);
+    await this.context!.workspaceState.update(StorageKeys.INTEGRATED_STATS_META, undefined);
     
-    console.log('[Storage] 所有数据已清除');
+    console.log('[Storage] 所有数据已清除（当前工作区）');
   }
 
   /**
@@ -250,12 +262,12 @@ export class StorageManager {
     this.checkInitialized();
     
     // VSCode API 没有直接提供获取所有键的方法
-    // 这里只能检查已知的键
-    const globalKeys = [StorageKeys.TEAM_STATS].filter(
+    // TEAM_STATS 现在存储在 workspaceState 中
+    const globalKeys = [].filter(
       key => this.context!.globalState.get(key) !== undefined
     ).length;
     
-    const workspaceKeys = [StorageKeys.LAST_ANALYZED, StorageKeys.CACHE_METADATA, StorageKeys.LINE_TRACKER_DATA, StorageKeys.INTEGRATED_STATS_META].filter(
+    const workspaceKeys = [StorageKeys.TEAM_STATS, StorageKeys.LAST_ANALYZED, StorageKeys.CACHE_METADATA, StorageKeys.LINE_TRACKER_DATA, StorageKeys.INTEGRATED_STATS_META].filter(
       key => this.context!.workspaceState.get(key) !== undefined
     ).length;
     
