@@ -10,7 +10,7 @@ import { StatsCommands } from './commands/statsCommands';
 import { MarkCommands } from './commands/markCommands';
 import { ReportCommands } from './commands/reportCommands';
 import { SettingsCommands } from './commands/settingsCommands';
-import { registerCommands } from './commands';
+import { registerCommands, CommandsContainer } from './commands';
 import { initTeamConfig } from './utils/git';
 import { AIDetector } from './core/aiDetector';
 import { MarkPatternManager } from './core/markPatternManager';
@@ -29,11 +29,13 @@ let lineTracker: LineTracker;
 let statusBarManager: StatusBarManager;
 let textChangeListener: TextChangeListener;
 let saveListener: SaveListener;
-let statsCommands: StatsCommands;
-let markCommands: MarkCommands;
-let reportCommands: ReportCommands;
 let settingsCommands: SettingsCommands;
 let sidebarProvider: SidebarProvider;
+
+// 命令对象容器 - 用于解决闭包问题
+const commandsContainer: CommandsContainer = {
+  settingsCommands: undefined as any
+};
 
 // 当前工作区跟踪，用于检测工作区切换
 let currentWorkspaceRoot: string | null = null;
@@ -106,8 +108,8 @@ async function toggleEnabled(): Promise<void> {
     // 禁用统计
     vscode.window.showInformationMessage('⏸️ AI 代码统计已禁用');
     
-    // 清理状态栏
-    statusBarManager?.dispose();
+    // 清理统计组件
+    disposeStats();
   }
 }
 
@@ -129,9 +131,14 @@ async function initializeStats(): Promise<void> {
   statusBarManager = new StatusBarManager(statsManager);
   
   // 初始化命令
-  statsCommands = new StatsCommands(statsManager);
-  markCommands = new MarkCommands(gitAnalyzer, statsManager);
-  reportCommands = new ReportCommands(statsManager, statsCommands, storage.getContext()!);
+  const statsCommands = new StatsCommands(statsManager);
+  const markCommands = new MarkCommands(gitAnalyzer, statsManager);
+  const reportCommands = new ReportCommands(statsManager, statsCommands, storage.getContext()!);
+  
+  // 更新命令容器 - 这样注册的命令闭包可以获取到最新对象
+  commandsContainer.statsCommands = statsCommands;
+  commandsContainer.markCommands = markCommands;
+  commandsContainer.reportCommands = reportCommands;
   
   // 初始化监听器（传入 LineTracker 用于无感统计）
   textChangeListener = new TextChangeListener(gitAnalyzer, lineTracker, async (source, document, startLine, endLine) => {
@@ -156,6 +163,11 @@ function disposeStats(): void {
   statusBarManager = undefined as any;
   textChangeListener = undefined as any;
   saveListener = undefined as any;
+  
+  // 清理命令容器
+  commandsContainer.statsCommands = undefined;
+  commandsContainer.markCommands = undefined;
+  commandsContainer.reportCommands = undefined;
 }
 
 export async function activate(context: vscode.ExtensionContext) {
@@ -260,6 +272,7 @@ export async function activate(context: vscode.ExtensionContext) {
   
   // 初始化设置命令（不需要统计启用也能使用）
   settingsCommands = new SettingsCommands();
+  commandsContainer.settingsCommands = settingsCommands;
   
   // 注册基础命令（不需要统计启用）
   context.subscriptions.push(
@@ -267,7 +280,8 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   
   // 注册其他命令（这些命令需要统计启用时才可用）
-  const commands = registerCommands(statsCommands, markCommands, reportCommands, settingsCommands);
+  // 使用容器模式，命令对象可以动态更新
+  const commands = registerCommands(commandsContainer);
   context.subscriptions.push(...commands);
   
   // 注册事件监听（带启用检查）
